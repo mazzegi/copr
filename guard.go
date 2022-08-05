@@ -34,6 +34,13 @@ func WithWd(wd string) GuardOption {
 	}
 }
 
+func WithStdIn(r io.Reader) GuardOption {
+	return func(g *Guard) error {
+		g.stdIn = r
+		return nil
+	}
+}
+
 func WithStdOut(w io.Writer) GuardOption {
 	return func(g *Guard) error {
 		g.stdOut = w
@@ -56,9 +63,10 @@ func NewGuard(programm string, opts ...GuardOption) (*Guard, error) {
 	g := &Guard{
 		programm: programm,
 		wd:       wd,
+		stdIn:    os.Stdin,
 		stdOut:   os.Stdout,
 		stdErr:   os.Stderr,
-		actionC:  make(chan action),
+		actionC:  make(chan any),
 	}
 	for _, o := range opts {
 		err := o(g)
@@ -70,27 +78,44 @@ func NewGuard(programm string, opts ...GuardOption) (*Guard, error) {
 }
 
 //
-
-type actionType string
-
-const (
-	actionTypeStart actionType = "start"
-	actionTypeStop  actionType = "stop"
-)
-
-type action struct {
-	typ  actionType
-	errC chan error
+type actionStartResult struct {
+	err error
+	pid int
 }
+
+type actionStopResult struct {
+	err error
+}
+
+type actionStart struct {
+	resC chan actionStartResult
+}
+
+type actionStop struct {
+	resC chan actionStopResult
+}
+
+// type actionType string
+
+// const (
+// 	actionTypeStart actionType = "start"
+// 	actionTypeStop  actionType = "stop"
+// )
+
+// type action struct {
+// 	typ  actionType
+// 	errC chan error
+// }
 
 type Guard struct {
 	programm string
 	args     []string
 	env      []string
 	wd       string
+	stdIn    io.Reader
 	stdOut   io.Writer
 	stdErr   io.Writer
-	actionC  chan action
+	actionC  chan any
 }
 
 const (
@@ -98,10 +123,27 @@ const (
 	restartAfter = 5 * time.Second
 )
 
+func (g *Guard) Start() (pid int, err error) {
+	resC := make(chan actionStartResult)
+	g.actionC <- &actionStart{
+		resC: resC,
+	}
+	res := <-resC
+	return res.pid, res.err
+}
+
+func (g *Guard) Stop() error {
+	resC := make(chan actionStopResult)
+	g.actionC <- &actionStop{
+		resC: resC,
+	}
+	res := <-resC
+	return res.err
+}
+
 func (g *Guard) RunCtx(ctx context.Context) {
 	var pid int = -1
 	exitC := make(chan struct{})
-
 	isRunning := func() bool {
 		return pid > -1
 	}
@@ -129,11 +171,28 @@ func (g *Guard) RunCtx(ctx context.Context) {
 		if isRunning() {
 			return errors.Errorf("already running")
 		}
-		spid, err := g.start(exitC)
+		cmd := exec.Command(g.programm, g.args...)
+		env := os.Environ()
+		cmd.Env = append(env, g.env...)
+		cmd.Dir = g.wd
+		cmd.Stdin = g.stdIn
+		cmd.Stdout = g.stdOut
+		cmd.Stderr = g.stdErr
+		cmd.SysProcAttr = sysProcAttrChildProc()
+		err := cmd.Start()
 		if err != nil {
-			return errors.Wrap(err, "start")
+			return errors.Wrap(err, "start-command")
 		}
-		pid = spid
+		pid = cmd.Process.Pid
+		go func() {
+			defer func() {
+				exitC <- struct{}{}
+			}()
+			err := cmd.Wait()
+			if err != nil {
+				io.WriteString(g.stdErr, fmt.Sprintf("error in cmd-wait: %v", err))
+			}
+		}()
 		return nil
 	}
 
@@ -152,44 +211,21 @@ func (g *Guard) RunCtx(ctx context.Context) {
 				io.WriteString(g.stdErr, fmt.Sprintf("restart: %v", err))
 			}
 		case a := <-g.actionC:
-			switch a.typ {
-			case actionTypeStart:
+			switch a := a.(type) {
+			case *actionStart:
 				err := start()
-				a.errC <- err
-			case actionTypeStop:
+				a.resC <- actionStartResult{
+					err: err,
+					pid: pid,
+				}
+			case *actionStop:
 				err := kill()
-				a.errC <- err
+				a.resC <- actionStopResult{
+					err: err,
+				}
 			default:
-				a.errC <- errors.Errorf("invalid action type %q", a.typ)
+				io.WriteString(g.stdErr, fmt.Sprintf("invalid action type %T", a))
 			}
 		}
 	}
-}
-
-func (g *Guard) start(exitC chan struct{}) (pid int, err error) {
-	cmd := exec.Command(g.programm, g.args...)
-	env := os.Environ()
-	cmd.Env = append(env, g.env...)
-	cmd.Dir = g.wd
-	cmd.Stdout = g.stdOut
-	cmd.Stderr = g.stdErr
-	cmd.SysProcAttr = sysProcAttrChildProc()
-
-	err = cmd.Start()
-	if err != nil {
-		return -1, errors.Wrap(err, "start-command")
-	}
-	pid = cmd.Process.Pid
-
-	go func() {
-		defer func() {
-			exitC <- struct{}{}
-		}()
-		err := cmd.Wait()
-		if err != nil {
-			io.WriteString(g.stdErr, fmt.Sprintf("error in cmd-wait: %v", err))
-		}
-	}()
-
-	return pid, nil
 }
