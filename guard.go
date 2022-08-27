@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -55,18 +56,34 @@ func WithStdErr(w io.Writer) GuardOption {
 	}
 }
 
+func WithKillTimeout(d time.Duration) GuardOption {
+	return func(g *Guard) error {
+		g.killTimeout = d
+		return nil
+	}
+}
+
+func WithRestartAfter(d time.Duration) GuardOption {
+	return func(g *Guard) error {
+		g.restartAfter = d
+		return nil
+	}
+}
+
 func NewGuard(programm string, opts ...GuardOption) (*Guard, error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return nil, errors.Wrap(err, "getwd")
 	}
 	g := &Guard{
-		programm: programm,
-		wd:       wd,
-		stdIn:    os.Stdin,
-		stdOut:   os.Stdout,
-		stdErr:   os.Stderr,
-		actionC:  make(chan any),
+		programm:     programm,
+		wd:           wd,
+		stdIn:        os.Stdin,
+		stdOut:       os.Stdout,
+		stdErr:       os.Stderr,
+		actionC:      make(chan any),
+		killTimeout:  5 * time.Second,
+		restartAfter: 5 * time.Second,
 	}
 	for _, o := range opts {
 		err := o(g)
@@ -74,10 +91,10 @@ func NewGuard(programm string, opts ...GuardOption) (*Guard, error) {
 			return nil, err
 		}
 	}
+	g.changeStatus(GuardStatusNotRunning)
 	return g, nil
 }
 
-//
 type actionStartResult struct {
 	err error
 	pid int
@@ -95,33 +112,28 @@ type actionStop struct {
 	resC chan actionStopResult
 }
 
-// type actionType string
-
-// const (
-// 	actionTypeStart actionType = "start"
-// 	actionTypeStop  actionType = "stop"
-// )
-
-// type action struct {
-// 	typ  actionType
-// 	errC chan error
-// }
-
-type Guard struct {
-	programm string
-	args     []string
-	env      []string
-	wd       string
-	stdIn    io.Reader
-	stdOut   io.Writer
-	stdErr   io.Writer
-	actionC  chan any
-}
+type GuardStatus string
 
 const (
-	killTimeout  = 5 * time.Second
-	restartAfter = 5 * time.Second
+	GuardStatusNotRunning     GuardStatus = "not-running"
+	GuardStatusRunningStopped GuardStatus = "running-stopped"
+	GuardStatusRunningStarted GuardStatus = "running-started"
 )
+
+type Guard struct {
+	programm     string
+	args         []string
+	env          []string
+	wd           string
+	stdIn        io.Reader
+	stdOut       io.Writer
+	stdErr       io.Writer
+	actionC      chan any
+	killTimeout  time.Duration
+	restartAfter time.Duration
+	statusMx     sync.RWMutex
+	status       GuardStatus
+}
 
 func (g *Guard) Start() (pid int, err error) {
 	resC := make(chan actionStartResult)
@@ -141,7 +153,30 @@ func (g *Guard) Stop() error {
 	return res.err
 }
 
+func (g *Guard) log(pattern string, args ...any) {
+	io.WriteString(g.stdOut, fmt.Sprintf(fmt.Sprintf("guard[%s]", g.programm)+pattern+"\n", args...))
+}
+
+func (g *Guard) logErr(pattern string, args ...any) {
+	io.WriteString(g.stdErr, fmt.Sprintf(fmt.Sprintf("guard[%s]", g.programm)+pattern+"\n", args...))
+}
+
+func (g *Guard) changeStatus(s GuardStatus) {
+	g.statusMx.Lock()
+	defer g.statusMx.Unlock()
+	g.status = s
+}
+
+func (g *Guard) Status() GuardStatus {
+	g.statusMx.RLock()
+	defer g.statusMx.RUnlock()
+	return g.status
+}
+
 func (g *Guard) RunCtx(ctx context.Context) {
+	g.changeStatus(GuardStatusRunningStopped)
+	defer g.changeStatus(GuardStatusNotRunning)
+
 	var pid int = -1
 	exitC := make(chan struct{})
 	isRunning := func() bool {
@@ -157,7 +192,8 @@ func (g *Guard) RunCtx(ctx context.Context) {
 			return errors.Wrap(err, "kill-process")
 		}
 		pid = -1
-		timer := time.NewTimer(killTimeout)
+		g.changeStatus(GuardStatusRunningStopped)
+		timer := time.NewTimer(g.killTimeout)
 		defer timer.Stop()
 		select {
 		case <-exitC:
@@ -190,25 +226,30 @@ func (g *Guard) RunCtx(ctx context.Context) {
 			}()
 			err := cmd.Wait()
 			if err != nil {
-				io.WriteString(g.stdErr, fmt.Sprintf("error in cmd-wait: %v", err))
+				g.logErr("error in cmd-wait: %v", err)
 			}
 		}()
+		g.changeStatus(GuardStatusRunningStarted)
 		return nil
 	}
 
 	restart := time.NewTimer(0)
 	restart.Stop()
+	g.log("loop")
+	defer g.log("loop done")
 	for {
 		select {
 		case <-ctx.Done():
 			kill()
 			return
 		case <-exitC:
-			restart.Reset(restartAfter)
+			pid = -1
+			g.changeStatus(GuardStatusRunningStopped)
+			restart.Reset(g.restartAfter)
 		case <-restart.C:
 			err := start()
 			if err != nil {
-				io.WriteString(g.stdErr, fmt.Sprintf("restart: %v", err))
+				g.logErr("restart: %v", err)
 			}
 		case a := <-g.actionC:
 			switch a := a.(type) {
@@ -224,7 +265,7 @@ func (g *Guard) RunCtx(ctx context.Context) {
 					err: err,
 				}
 			default:
-				io.WriteString(g.stdErr, fmt.Sprintf("invalid action type %T", a))
+				g.logErr("invalid action type %T", a)
 			}
 		}
 	}

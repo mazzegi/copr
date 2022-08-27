@@ -1,99 +1,131 @@
 package copr
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/mazzegi/copr/coprtest"
 	"github.com/pkg/errors"
 )
 
-const prgSrc = `
-package main
-
-import (
-	"context"
-	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
-)
-
-func logf(pattern string, args ...any) {
-	fmt.Printf(pattern+"\n", args...)
-}
-
-func main() {
-	logf("start")
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
-	defer cancel()
-	<-ctx.Done()
-	logf("done")
-}
-`
-
 func buildPrg(dir string, name string) error {
-	tmpSrc := filepath.Join(dir, "src.go")
-	err := os.WriteFile(tmpSrc, []byte(prgSrc), os.ModePerm)
-	if err != nil {
-		return errors.Wrapf(err, "write file tmp-src: %q", tmpSrc)
-	}
+	tmpSrc := "cmd/test_dummy/main.go"
 	binPath := filepath.Join(dir, name)
-
 	cmd := exec.Command("go", "build", "-v", "-o", binPath, tmpSrc)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err = cmd.Run()
-
+	err := cmd.Run()
 	return err
 }
 
+func sendRequest(url string, cmd coprtest.TestCommand) error {
+	var buf bytes.Buffer
+	err := json.NewEncoder(&buf).Encode(cmd)
+	if err != nil {
+		return errors.Wrap(err, "encode-json")
+	}
+
+	resp, err := http.Post(url, "application/json", &buf)
+	if err != nil {
+		return errors.Wrap(err, "post-request")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bs, _ := io.ReadAll(resp.Body)
+		return errors.Errorf("request-error with status %s: %q", resp.Status, string(bs))
+	}
+	return nil
+}
+
+func assert(t *testing.T, cond bool, msg string, args ...any) {
+	if !cond {
+		t.Fatalf("assert: "+msg, args...)
+	}
+}
+
+func assertEqual[T comparable](t *testing.T, want T, have T, msg string, args ...any) {
+	if want != have {
+		t.Fatalf(fmt.Sprintf("assert-equal: want=%v, have=%v:", want, have)+msg, args...)
+	}
+}
+
 func TestGuard(t *testing.T) {
-	dir := "tmp"
+	bindir := "tmp"
 	name := "dummy"
+	dummyBindAddr := "127.0.0.1:21001"
+	dummyBindArg := "-bind=" + dummyBindAddr
 
-	err := os.MkdirAll(dir, os.ModePerm)
-	if err != nil {
-		t.Fatalf("mkdirall %q", dir)
-		return
-	}
-	defer os.RemoveAll(dir)
-	err = buildPrg(dir, name)
-	if err != nil {
-		t.Fatalf("build-prg")
-		return
+	crash := func() {
+		url := fmt.Sprintf("http://%s", dummyBindAddr)
+		sendRequest(url, coprtest.TestCommand{
+			Action: coprtest.TestActionCrash,
+		})
 	}
 
-	binPath := filepath.Join(dir, name)
-	guard, err := NewGuard(binPath)
-	if err != nil {
-		t.Fatalf("new-guard")
-		return
-	}
+	err := os.MkdirAll(bindir, os.ModePerm)
+	assert(t, err == nil, "mkdirall %q", bindir)
+	defer os.RemoveAll(bindir)
+
+	err = buildPrg(bindir, name)
+	assert(t, err == nil, "build-prg")
+
+	binPath := filepath.Join(bindir, name)
+	guard, err := NewGuard(
+		binPath,
+		WithArgs(dummyBindArg),
+		WithKillTimeout(500*time.Millisecond),
+		WithRestartAfter(500*time.Millisecond),
+	)
+	assert(t, err == nil, "new-guard")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	wg := sync.WaitGroup{}
-	wg.Add(1)
+	wc := make(chan struct{})
 	go func() {
-		defer wg.Done()
+		defer close(wc)
 		guard.RunCtx(ctx)
 	}()
 
 	//start
 	pid, err := guard.Start()
-	if err != nil {
-		t.Fatalf("guard-start failed: %v", err)
-	}
-	fmt.Printf("started with pid=%d\n", pid)
+	assert(t, err == nil, "guard-start")
 
-	<-time.After(5 * time.Second)
+	fmt.Printf("started with pid=%d\n", pid)
+	assertEqual(t, GuardStatusRunningStarted, guard.Status(), "status after started")
+
+	<-time.After(100 * time.Millisecond)
+	crash()
+	<-time.After(100 * time.Millisecond)
+	assertEqual(t, GuardStatusRunningStopped, guard.Status(), "status after crash")
+
+	<-time.After(500 * time.Millisecond)
+	assertEqual(t, GuardStatusRunningStarted, guard.Status(), "status after restart")
+
+	//
+	err = guard.Stop()
+	assert(t, err == nil, "guard-stop")
+	<-time.After(500 * time.Millisecond)
+	assertEqual(t, GuardStatusRunningStopped, guard.Status(), "status after stop")
+
+	pid, err = guard.Start()
+	assert(t, err == nil, "guard-start")
+	fmt.Printf("started with pid=%d\n", pid)
+	assertEqual(t, GuardStatusRunningStarted, guard.Status(), "status after started")
+
 	cancel()
-	wg.Wait()
+	select {
+	case <-wc:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("guard-exit via ctx failed")
+	}
 
 	fmt.Printf("done\n")
 }
