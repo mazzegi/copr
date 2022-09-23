@@ -1,14 +1,13 @@
 {
-  "name": "unit_01",
+  "name": "unit_02",
   "enabled": true,
-  "program": "unit_01",
+  "program": "unit_02",
   "args": [
-    "-arg1=v1",
-    "-arg2=v2"
+    "-bind=127.0.0.1:31002"
   ],
   "env": [
     "E1=V1",
     "E2=V2"
   ],
-  "restart-after": "5s"
+  "restart-after-sec": 5
 }

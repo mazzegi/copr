@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mazzegi/log"
@@ -16,32 +17,49 @@ type CTLResponse struct {
 	Message string `json:"message"`
 }
 
-func NewService(bind string) (*Service, error) {
+func NewService(bind string, controller *Controller) (*Service, error) {
 	l, err := net.Listen("tcp", bind)
 	if err != nil {
 		return nil, errors.Wrapf(err, "listen-tcp on %q", bind)
 	}
+
 	s := &Service{
-		listener: l,
-		server:   &http.Server{},
+		listener:   l,
+		server:     &http.Server{},
+		controller: controller,
 	}
 	return s, nil
 }
 
 type Service struct {
-	listener net.Listener
-	server   *http.Server
+	listener   net.Listener
+	server     *http.Server
+	controller *Controller
 }
 
 func (s *Service) RunCtx(ctx context.Context) error {
 	s.server.Handler = http.HandlerFunc(s.handleHttp)
 	go s.server.Serve(s.listener)
 	log.Infof("serving on %q", s.listener.Addr())
+
+	//activate controller
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.controller.RunCtx(ctx)
+	}()
+	s.controller.StartAll()
+
 	<-ctx.Done()
+	//wait for controller
+	wg.Wait()
+	log.Infof("controller is done")
 
 	sctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 	s.server.Shutdown(sctx)
+	log.Infof("server is done")
 	return nil
 }
 
@@ -69,6 +87,12 @@ func (s *Service) handleGET(w http.ResponseWriter, r *http.Request) {
 	switch elt {
 	case "probe":
 		s.replyMsg(w, "probe ok")
+	case "start-all":
+		msgs, errs := s.controller.StartAll()
+		s.replyMsg(w, strings.Join(msgs, "\n")+strings.Join(errs, "\n"))
+	case "stop-all":
+		msgs, errs := s.controller.StopAll()
+		s.replyMsg(w, strings.Join(msgs, "\n")+strings.Join(errs, "\n"))
 	}
 	_ = tail
 }

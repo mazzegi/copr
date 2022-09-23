@@ -20,9 +20,15 @@ func main() {
 
 func run() error {
 	bind := flag.String("bind", ":21001", "http-bind-address")
+	dir := flag.String("dir", "../../_demo", "workspace directory")
 	flag.Parse()
 
-	s, err := copr.NewService(*bind)
+	controller, err := copr.NewController(*dir)
+	if err != nil {
+		return errors.Wrapf(err, "new controller in %q", *dir)
+	}
+
+	s, err := copr.NewService(*bind, controller)
 	if err != nil {
 		return errors.Wrap(err, "new-service")
 	}

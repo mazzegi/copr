@@ -3,12 +3,11 @@
   "enabled": true,
   "program": "unit_01",
   "args": [
-    "-arg1=v1",
-    "-arg2=v2"
+    "-bind=127.0.0.1:31001"
   ],
   "env": [
     "E1=V1",
     "E2=V2"
   ],
-  "restart-after": "5s"
+  "restart-after-sec": 5
 }

@@ -184,6 +184,7 @@ func (g *Guard) RunCtx(ctx context.Context) {
 	}
 
 	kill := func() error {
+		//TODO: use  exec.CommandContext() instead of kill - maybe
 		if !isRunning() {
 			return errors.Errorf("not running")
 		}

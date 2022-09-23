@@ -4,19 +4,18 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/pkg/errors"
 )
 
 // Unit represenst on Service/Program, considered to reside in one directory
 type UnitConfig struct {
-	Name         string        `json:"name"`
-	Enabled      bool          `json:"enabled"`
-	Program      string        `json:"program"`
-	Args         []string      `json:"args"`
-	Env          []string      `json:"env"`
-	RestartAfter time.Duration `json:"restart-after"`
+	Name            string   `json:"name"`
+	Enabled         bool     `json:"enabled"`
+	Program         string   `json:"program"`
+	Args            []string `json:"args,omitempty"`
+	Env             []string `json:"env,omitempty"`
+	RestartAfterSec int      `json:"restart-after-sec"`
 }
 
 type Unit struct {
@@ -70,7 +69,7 @@ func (us *Units) Load() error {
 			return errors.Wrapf(err, "failed to json-decode unit file %q", unitFile)
 		}
 		us.units = append(us.units, Unit{
-			Dir:    fi.Name(),
+			Dir:    filepath.Join(us.dir, fi.Name()),
 			Config: uc,
 		})
 	}
