@@ -1,0 +1,14 @@
+{
+  "name": "unit_01",
+  "enabled": true,
+  "program": "unit_01",
+  "args": [
+    "-arg1=v1",
+    "-arg2=v2"
+  ],
+  "env": [
+    "E1=V1",
+    "E2=V2"
+  ],
+  "restart-after": "5s"
+}

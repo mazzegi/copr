@@ -18,7 +18,7 @@ import (
 )
 
 func buildPrg(dir string, name string) error {
-	tmpSrc := "cmd/test_dummy/main.go"
+	tmpSrc := "coprtest/cmd/test_dummy/main.go"
 	binPath := filepath.Join(dir, name)
 	cmd := exec.Command("go", "build", "-v", "-o", binPath, tmpSrc)
 	cmd.Stdout = os.Stdout
