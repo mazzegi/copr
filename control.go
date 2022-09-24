@@ -15,6 +15,7 @@ import (
 type controllerUnit struct {
 	unit  Unit
 	guard *Guard
+	stats Stats
 }
 
 func NewController(dir string) (*Controller, error) {
@@ -78,10 +79,14 @@ func (c *Controller) RunCtx(ctx context.Context, guardsRunningC chan struct{}) {
 	close(guardsRunningC)
 
 	func() {
+		timer := time.NewTimer(0)
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-timer.C:
+				c.collectStats()
+				timer.Reset(5 * time.Second)
 			case cu := <-c.runC:
 				log.Infof("controller: run %q", cu.unit.Name)
 				wg.Add(1)
@@ -124,6 +129,24 @@ func (cr ControllerResponse) log() {
 		log.Errorf("controller: %s", m)
 	}
 }
+
+func (c *Controller) collectStats() {
+	c.Lock()
+	defer c.Unlock()
+	for _, cu := range c.units {
+		if !cu.guard.IsStarted() {
+			cu.stats = Stats{}
+			continue
+		}
+		err := CollectStats(cu.guard.PID(), &cu.stats)
+		if err != nil {
+			log.Warnf("collect stats for unit %q, pid %d", cu.unit.Name, cu.guard.PID())
+			continue
+		}
+	}
+}
+
+//
 
 func (c *Controller) StartAll() (resp ControllerResponse) {
 	c.Lock()
@@ -276,7 +299,7 @@ func (c *Controller) Stat() (resp ControllerResponse) {
 			continue
 		}
 		if cu.guard.IsStarted() {
-			resp.Msgf("unit %q: enabled, started with PID %d", cu.unit.Name, cu.guard.PID())
+			resp.Msgf("unit %q: enabled, started with PID %d: %s", cu.unit.Name, cu.guard.PID(), cu.stats.String())
 		} else {
 			resp.Msgf("unit %q: enabled, not-started", cu.unit.Name)
 		}
