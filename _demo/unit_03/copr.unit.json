@@ -6,7 +6,7 @@
   ],
   "env": [
     "E1=V1",
-    "E2=V2"
+    "E2=V87"
   ],
   "restart-after-sec": 5
 }

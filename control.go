@@ -298,12 +298,10 @@ func (c *Controller) Deploy(name string, dir string) (resp ControllerResponse, e
 	c.Lock()
 	defer c.Unlock()
 	if cu, ok := c.findUnit(name); ok {
-		c.deployUpdate(cu, dir)
+		return c.deployUpdate(cu, dir)
 	} else {
-		c.deployCreate(name, dir)
+		return c.deployCreate(name, dir)
 	}
-
-	return
 }
 
 func (c *Controller) deployCreate(unit string, dir string) (resp ControllerResponse, err error) {
@@ -311,6 +309,8 @@ func (c *Controller) deployCreate(unit string, dir string) (resp ControllerRespo
 	if err != nil {
 		return resp, errors.Wrapf(err, "create unit-config %q in %q", unit, dir)
 	}
+	resp.Msgf("unit %q: created", unit)
+
 	guard, err := NewGuard(
 		filepath.Join(u.Dir, u.Config.Program),
 		WithArgs(u.Config.Args...),
@@ -321,23 +321,71 @@ func (c *Controller) deployCreate(unit string, dir string) (resp ControllerRespo
 	if err != nil {
 		return resp, errors.Wrapf(err, "new-guard for unit %q", u.Name)
 	}
+
 	cu := &controllerUnit{
 		unit:  u,
 		guard: guard,
 	}
 	c.units = append(c.units, cu)
 	c.runC <- cu
-	if u.Config.Enabled {
-		pid, err := guard.Start()
-		if err != nil {
-			resp.Errf("starting unit %q: %v", unit, err)
-		} else {
-			resp.Msgf("started %q with PID %d", unit, pid)
-		}
+	resp.Msgf("unit %q: guard is running", unit)
+
+	if !u.Config.Enabled {
+		resp.Msgf("unit %q: disabled", unit)
+		return
 	}
+
+	pid, err := guard.Start()
+	if err != nil {
+		resp.Errf("starting unit %q: %v", unit, err)
+	} else {
+		resp.Msgf("started %q with PID %d", unit, pid)
+	}
+
 	return
 }
 
 func (c *Controller) deployUpdate(cu *controllerUnit, dir string) (resp ControllerResponse, err error) {
+	wasRunning := false
+	if cu.guard.IsStarted() {
+		wasRunning = true
+		cu.guard.Stop()
+	}
+
+	//
+	u, err := c.unitConfigs.Update(cu.unit.Name, dir)
+	if err != nil {
+		return resp, errors.Wrapf(err, "%q: update-unit-config", cu.unit.Name)
+	}
+	cu.unit = u
+
+	//update guard
+	err = cu.guard.UpdateOpts(
+		WithArgs(u.Config.Args...),
+		WithEnv(u.Config.Env...),
+		WithWd(u.Dir),
+		WithRestartAfter(time.Second*time.Duration(u.Config.RestartAfterSec)),
+	)
+	if err != nil {
+		return resp, errors.Wrapf(err, "%q: update-guard-options", cu.unit.Name)
+	}
+	resp.Msgf("unit %q: updated", cu.unit.Name)
+
+	//
+	if !cu.unit.Config.Enabled {
+		resp.Msgf("unit %q: disabled", cu.unit.Name)
+		return
+	}
+	if !wasRunning {
+		resp.Msgf("unit %q: not started (was not running before)", cu.unit.Name)
+		return
+	}
+
+	pid, err := cu.guard.Start()
+	if err != nil {
+		resp.Errf("starting unit %q: %v", cu.unit.Name, err)
+	} else {
+		resp.Msgf("started %q with PID %d", cu.unit.Name, pid)
+	}
 	return
 }

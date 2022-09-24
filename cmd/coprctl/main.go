@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mazzegi/copr"
 	"github.com/pkg/errors"
@@ -32,7 +33,9 @@ func main() {
 	}
 
 	sub := strings.ToLower(strings.TrimSpace(os.Args[1]))
+	t0 := time.Now()
 	resp, err := exec(host, sub, os.Args[2:])
+	d := time.Since(t0)
 
 	if err != nil {
 		errf("REQUEST: %v", err.Error())
@@ -43,6 +46,7 @@ func main() {
 	for _, m := range resp.CtrlMessages {
 		logf("%s", m)
 	}
+	logf("%s", d)
 }
 
 func exec(host string, cmd string, args []string) (copr.CTLResponse, error) {

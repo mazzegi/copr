@@ -104,12 +104,21 @@ type actionStopResult struct {
 	err error
 }
 
+type actionUpdateOptsResult struct {
+	err error
+}
+
 type actionStart struct {
 	resC chan actionStartResult
 }
 
 type actionStop struct {
 	resC chan actionStopResult
+}
+
+type actionUpdateOpts struct {
+	opts []GuardOption
+	resC chan actionUpdateOptsResult
 }
 
 type GuardRunningState string
@@ -152,6 +161,16 @@ func (g *Guard) Start() (pid int, err error) {
 func (g *Guard) Stop() error {
 	resC := make(chan actionStopResult)
 	g.actionC <- &actionStop{
+		resC: resC,
+	}
+	res := <-resC
+	return res.err
+}
+
+func (g *Guard) UpdateOpts(opts ...GuardOption) error {
+	resC := make(chan actionUpdateOptsResult)
+	g.actionC <- &actionUpdateOpts{
+		opts: opts,
 		resC: resC,
 	}
 	res := <-resC
@@ -277,6 +296,17 @@ func (g *Guard) RunCtx(ctx context.Context) {
 			case *actionStop:
 				err := kill()
 				a.resC <- actionStopResult{
+					err: err,
+				}
+			case *actionUpdateOpts:
+				var err error
+				for _, o := range a.opts {
+					err = o(g)
+					if err != nil {
+						break
+					}
+				}
+				a.resC <- actionUpdateOptsResult{
 					err: err,
 				}
 			default:

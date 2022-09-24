@@ -2,8 +2,11 @@ package copr
 
 import (
 	"encoding/json"
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pkg/errors"
 )
@@ -32,6 +35,7 @@ func LoadUnits(dir string) (*Units, error) {
 	us := &Units{
 		dir: adir,
 	}
+	os.MkdirAll(filepath.Join(adir, archiveDir), os.ModePerm)
 	err = us.Load()
 	if err != nil {
 		return nil, errors.Wrap(err, "load units")
@@ -44,6 +48,10 @@ type Units struct {
 	units []Unit
 }
 
+const (
+	archiveDir = ".archive"
+)
+
 func (us *Units) Load() error {
 	fis, err := os.ReadDir(us.dir)
 	if err != nil {
@@ -51,6 +59,9 @@ func (us *Units) Load() error {
 	}
 	for _, fi := range fis {
 		if !fi.IsDir() {
+			continue
+		}
+		if fi.Name() == archiveDir {
 			continue
 		}
 
@@ -137,6 +148,48 @@ func (us *Units) Create(unit string, dir string) (Unit, error) {
 
 	us.units = append(us.units, u)
 
+	return u, nil
+}
+
+func (us *Units) Update(unit string, dir string) (Unit, error) {
+	//archive old unit dir
+	unitDir := filepath.Join(us.dir, unit)
+	archUnitFile := filepath.Join(us.dir, archiveDir, fmt.Sprintf("%s_%s_%03d.bak.zip", unit, time.Now().Format("20060102150405"), rand.Intn(1000)))
+	archF, err := os.Create(archUnitFile)
+	if err != nil {
+		return Unit{}, errors.Wrapf(err, "create archive in %q", archUnitFile)
+	}
+	defer archF.Close()
+	err = ZipDir(archF, unitDir)
+	if err != nil {
+		return Unit{}, errors.Wrapf(err, "create zip in %q", archUnitFile)
+	}
+	err = os.RemoveAll(unitDir)
+	if err != nil {
+		return Unit{}, errors.Wrapf(err, "remove old unitdir %q", unitDir)
+	}
+
+	//
+	err = os.Rename(dir, unitDir)
+	if err != nil {
+		return Unit{}, errors.Wrapf(err, "rename %q -> %q", dir, unitDir)
+	}
+	u, err := us.loadUnit(unit)
+	if err != nil {
+		return Unit{}, errors.Wrapf(err, "load-unit %q", unit)
+	}
+
+	prg := filepath.Join(unitDir, u.Config.Program)
+	err = os.Chmod(prg, 0755)
+	if err != nil {
+		return Unit{}, errors.Wrapf(err, "chmod program %q to 0755", prg)
+	}
+
+	for i, u := range us.units {
+		if u.Name == unit {
+			us.units[i] = u
+		}
+	}
 	return u, nil
 }
 
