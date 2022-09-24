@@ -115,17 +115,17 @@ func postCommand(host string, urlPath string) (copr.CTLResponse, error) {
 }
 
 func deploy(host string, args []string) (copr.CTLResponse, error) {
-	if len(args) == 0 {
-		return copr.CTLResponse{}, errors.Errorf("usage: deploy <folder>")
+	if len(args) < 2 {
+		return copr.CTLResponse{}, errors.Errorf("usage: deploy <unit> <folder>")
 	}
-	dir := args[0]
+	dir := args[1]
 	buf := &bytes.Buffer{}
 	err := copr.ZipDir(buf, dir)
 	if err != nil {
 		return copr.CTLResponse{}, errors.Wrapf(err, "zip-dir %q", dir)
 	}
 
-	url := fmt.Sprintf("http://%s/deploy", host)
+	url := fmt.Sprintf("http://%s/deploy?unit=%s", host, args[0])
 	resp, err := http.Post(url, "application/octet-stream", buf)
 	if err != nil {
 		return copr.CTLResponse{}, errors.Wrapf(err, "post %q", url)

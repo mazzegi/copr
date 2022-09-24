@@ -174,5 +174,5 @@ func (s *Service) deploy(r *http.Request) (ControllerResponse, error) {
 	if err != nil {
 		return ControllerResponse{}, errors.Wrapf(err, "unzip %q to %q", tmpFile, tmpDir)
 	}
-	return s.controller.Deploy(tmpDir)
+	return s.controller.Deploy(r.URL.Query().Get("unit"), tmpDir)
 }
