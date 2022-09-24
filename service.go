@@ -3,8 +3,12 @@ package copr
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"math/rand"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -14,8 +18,8 @@ import (
 )
 
 type CTLResponse struct {
-	Messages []string `json:"message,omitempty"`
-	Errors   []string `json:"errors,omitempty"`
+	CtrlMessages []string `json:"ctrl-message,omitempty"`
+	CtrlErrors   []string `json:"ctrl-errors,omitempty"`
 }
 
 func NewService(bind string, controller *Controller) (*Service, error) {
@@ -82,8 +86,8 @@ func (s *Service) replyMsg(w http.ResponseWriter, status int, resp ControllerRes
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(CTLResponse{
-		Messages: resp.Messages,
-		Errors:   resp.Errors,
+		CtrlMessages: resp.Messages,
+		CtrlErrors:   resp.Errors,
 	})
 }
 
@@ -125,10 +129,50 @@ func (s *Service) handlePOST(w http.ResponseWriter, r *http.Request) {
 	case "disable":
 		resp := s.controller.Disable(r.URL.Query().Get("unit"))
 		s.replyMsg(w, http.StatusOK, resp)
+	case "deploy":
+		resp, err := s.deploy(r)
+		if err != nil {
+			resp.Errf(err.Error())
+			s.replyMsg(w, http.StatusInternalServerError, resp)
+		} else {
+			s.replyMsg(w, http.StatusOK, resp)
+		}
 	default:
 		resp := ControllerResponse{}
 		resp.Errf("no such command %q", elt)
 		s.replyMsg(w, http.StatusNotFound, resp)
 	}
 	_ = tail
+}
+
+//
+
+func (s *Service) deploy(r *http.Request) (ControllerResponse, error) {
+	//copy content to temp file
+	name := fmt.Sprintf("deploy_%s_%d", time.Now().Format("20060102150405"), rand.Intn(1000))
+	tmpFile := fmt.Sprintf(".tmp/%s.zip", name)
+
+	err := os.MkdirAll(".tmp", os.ModePerm)
+	if err != nil {
+		return ControllerResponse{}, errors.Wrapf(err, "mkdirall %q", ".tmp")
+	}
+	defer os.RemoveAll(".tmp")
+	tf, err := os.Create(tmpFile)
+	if err != nil {
+		return ControllerResponse{}, errors.Wrapf(err, "create temp-file %q", tmpFile)
+	}
+	defer tf.Close()
+
+	_, err = io.Copy(tf, r.Body)
+	if err != nil {
+		return ControllerResponse{}, errors.Wrapf(err, "deploy copy to tmp-file %q", tmpFile)
+	}
+
+	// unzip folder
+	tmpDir := fmt.Sprintf(".tmp/%s", name)
+	err = UnzipTo(tmpFile, tmpDir)
+	if err != nil {
+		return ControllerResponse{}, errors.Wrapf(err, "unzip %q to %q", tmpFile, tmpDir)
+	}
+	return s.controller.Deploy(tmpDir)
 }

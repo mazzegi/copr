@@ -258,3 +258,7 @@ func (c *Controller) Stat() (resp ControllerResponse) {
 	}
 	return
 }
+
+func (c *Controller) Deploy(dir string) (resp ControllerResponse, err error) {
+	return
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -36,10 +37,10 @@ func main() {
 	if err != nil {
 		errf("REQUEST: %v", err.Error())
 	}
-	for _, em := range resp.Errors {
+	for _, em := range resp.CtrlErrors {
 		errf("COPR: %s", em)
 	}
-	for _, m := range resp.Messages {
+	for _, m := range resp.CtrlMessages {
 		logf("%s", m)
 	}
 }
@@ -72,6 +73,8 @@ func exec(host string, cmd string, args []string) (copr.CTLResponse, error) {
 			return copr.CTLResponse{}, errors.Errorf("usage: disable <unit-name>")
 		}
 		return postCommand(host, fmt.Sprintf("disable?unit=%s", args[0]))
+	case "deploy":
+		return deploy(host, args)
 	default:
 		return copr.CTLResponse{}, errors.Errorf("invalid subcommand %q", cmd)
 	}
@@ -97,6 +100,33 @@ func get(host string, urlPath string) (copr.CTLResponse, error) {
 func postCommand(host string, urlPath string) (copr.CTLResponse, error) {
 	url := fmt.Sprintf("http://%s/%s", host, urlPath)
 	resp, err := http.Post(url, "application/json", nil)
+	if err != nil {
+		return copr.CTLResponse{}, errors.Wrapf(err, "post %q", url)
+	}
+	var ctlRes copr.CTLResponse
+	err = json.NewDecoder(resp.Body).Decode(&ctlRes)
+	if err != nil {
+		return copr.CTLResponse{}, errors.Wrap(err, "decode-json")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ctlRes, errors.Errorf("status %s", resp.Status)
+	}
+	return ctlRes, nil
+}
+
+func deploy(host string, args []string) (copr.CTLResponse, error) {
+	if len(args) == 0 {
+		return copr.CTLResponse{}, errors.Errorf("usage: deploy <folder>")
+	}
+	dir := args[0]
+	buf := &bytes.Buffer{}
+	err := copr.ZipDir(buf, dir)
+	if err != nil {
+		return copr.CTLResponse{}, errors.Wrapf(err, "zip-dir %q", dir)
+	}
+
+	url := fmt.Sprintf("http://%s/deploy", host)
+	resp, err := http.Post(url, "application/octet-stream", buf)
 	if err != nil {
 		return copr.CTLResponse{}, errors.Wrapf(err, "post %q", url)
 	}
