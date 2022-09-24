@@ -14,7 +14,8 @@ import (
 )
 
 type CTLResponse struct {
-	Message string `json:"message"`
+	Messages []string `json:"message,omitempty"`
+	Errors   []string `json:"errors,omitempty"`
 }
 
 func NewService(bind string, controller *Controller) (*Service, error) {
@@ -43,12 +44,15 @@ func (s *Service) RunCtx(ctx context.Context) error {
 	log.Infof("serving on %q", s.listener.Addr())
 
 	//activate controller
+	guardsRunningC := make(chan struct{})
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		s.controller.RunCtx(ctx)
+		s.controller.RunCtx(ctx, guardsRunningC)
 	}()
+	<-guardsRunningC
+
 	s.controller.StartAll()
 
 	<-ctx.Done()
@@ -74,10 +78,13 @@ func (s *Service) handleHttp(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Service) replyMsg(w http.ResponseWriter, msg string) {
+func (s *Service) replyMsg(w http.ResponseWriter, status int, resp ControllerResponse) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(CTLResponse{Message: msg})
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(CTLResponse{
+		Messages: resp.Messages,
+		Errors:   resp.Errors,
+	})
 }
 
 func (s *Service) handleGET(w http.ResponseWriter, r *http.Request) {
@@ -85,18 +92,43 @@ func (s *Service) handleGET(w http.ResponseWriter, r *http.Request) {
 
 	elt, tail, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	switch elt {
-	case "probe":
-		s.replyMsg(w, "probe ok")
-	case "start-all":
-		msgs, errs := s.controller.StartAll()
-		s.replyMsg(w, strings.Join(msgs, "\n")+strings.Join(errs, "\n"))
-	case "stop-all":
-		msgs, errs := s.controller.StopAll()
-		s.replyMsg(w, strings.Join(msgs, "\n")+strings.Join(errs, "\n"))
+	case "stat":
+		resp := s.controller.Stat()
+		s.replyMsg(w, http.StatusOK, resp)
+	default:
+		resp := ControllerResponse{}
+		resp.Errf("no such resource %q", elt)
+		s.replyMsg(w, http.StatusNotFound, resp)
 	}
 	_ = tail
 }
 
 func (s *Service) handlePOST(w http.ResponseWriter, r *http.Request) {
 	log.Debugf("handle-POST: %q", r.URL.Path)
+	elt, tail, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	switch elt {
+	case "start-all":
+		resp := s.controller.StartAll()
+		s.replyMsg(w, http.StatusOK, resp)
+	case "stop-all":
+		resp := s.controller.StopAll()
+		s.replyMsg(w, http.StatusOK, resp)
+	case "start":
+		resp := s.controller.Start(r.URL.Query().Get("unit"))
+		s.replyMsg(w, http.StatusOK, resp)
+	case "stop":
+		resp := s.controller.Stop(r.URL.Query().Get("unit"))
+		s.replyMsg(w, http.StatusOK, resp)
+	case "enable":
+		resp := s.controller.Enable(r.URL.Query().Get("unit"))
+		s.replyMsg(w, http.StatusOK, resp)
+	case "disable":
+		resp := s.controller.Disable(r.URL.Query().Get("unit"))
+		s.replyMsg(w, http.StatusOK, resp)
+	default:
+		resp := ControllerResponse{}
+		resp.Errf("no such command %q", elt)
+		s.replyMsg(w, http.StatusNotFound, resp)
+	}
+	_ = tail
 }

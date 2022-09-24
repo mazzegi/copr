@@ -75,3 +75,19 @@ func (us *Units) Load() error {
 	}
 	return nil
 }
+
+func (us *Units) SaveUnit(u Unit) error {
+	unitFile := filepath.Join(u.Dir, "copr.unit.json")
+	f, err := os.Create(unitFile)
+	if err != nil {
+		return errors.Wrapf(err, "create unitfile %q", unitFile)
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	err = enc.Encode(u.Config)
+	if err != nil {
+		return errors.Wrapf(err, "json-encode unitfile %q", unitFile)
+	}
+	return nil
+}

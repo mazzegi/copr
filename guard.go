@@ -91,7 +91,7 @@ func NewGuard(programm string, opts ...GuardOption) (*Guard, error) {
 			return nil, err
 		}
 	}
-	g.changeStatus(GuardStatusNotRunning)
+	g.changeStatus(GuardStatusNotRunning, -1)
 	return g, nil
 }
 
@@ -112,13 +112,18 @@ type actionStop struct {
 	resC chan actionStopResult
 }
 
-type GuardStatus string
+type GuardRunningState string
 
 const (
-	GuardStatusNotRunning     GuardStatus = "not-running"
-	GuardStatusRunningStopped GuardStatus = "running-stopped"
-	GuardStatusRunningStarted GuardStatus = "running-started"
+	GuardStatusNotRunning     GuardRunningState = "not-running"
+	GuardStatusRunningStopped GuardRunningState = "running-stopped"
+	GuardStatusRunningStarted GuardRunningState = "running-started"
 )
+
+type GuardState struct {
+	RunningState GuardRunningState
+	PID          int
+}
 
 type Guard struct {
 	programm     string
@@ -132,7 +137,7 @@ type Guard struct {
 	killTimeout  time.Duration
 	restartAfter time.Duration
 	statusMx     sync.RWMutex
-	status       GuardStatus
+	status       GuardState
 }
 
 func (g *Guard) Start() (pid int, err error) {
@@ -161,21 +166,30 @@ func (g *Guard) logErr(pattern string, args ...any) {
 	io.WriteString(g.stdErr, fmt.Sprintf(fmt.Sprintf("guard[%s]", g.programm)+pattern+"\n", args...))
 }
 
-func (g *Guard) changeStatus(s GuardStatus) {
+func (g *Guard) changeStatus(rs GuardRunningState, pid int) {
 	g.statusMx.Lock()
 	defer g.statusMx.Unlock()
-	g.status = s
+	g.status.RunningState = rs
+	g.status.PID = pid
 }
 
-func (g *Guard) Status() GuardStatus {
+func (g *Guard) Status() GuardState {
 	g.statusMx.RLock()
 	defer g.statusMx.RUnlock()
 	return g.status
 }
 
+func (g *Guard) IsStarted() bool {
+	return g.Status().RunningState == GuardStatusRunningStarted
+}
+
+func (g *Guard) PID() int {
+	return g.Status().PID
+}
+
 func (g *Guard) RunCtx(ctx context.Context) {
-	g.changeStatus(GuardStatusRunningStopped)
-	defer g.changeStatus(GuardStatusNotRunning)
+	g.changeStatus(GuardStatusRunningStopped, -1)
+	defer g.changeStatus(GuardStatusNotRunning, -1)
 
 	var pid int = -1
 	exitC := make(chan struct{})
@@ -193,7 +207,7 @@ func (g *Guard) RunCtx(ctx context.Context) {
 			return errors.Wrap(err, "kill-process")
 		}
 		pid = -1
-		g.changeStatus(GuardStatusRunningStopped)
+		g.changeStatus(GuardStatusRunningStopped, -1)
 		timer := time.NewTimer(g.killTimeout)
 		defer timer.Stop()
 		select {
@@ -230,7 +244,7 @@ func (g *Guard) RunCtx(ctx context.Context) {
 				g.logErr("error in cmd-wait: %v", err)
 			}
 		}()
-		g.changeStatus(GuardStatusRunningStarted)
+		g.changeStatus(GuardStatusRunningStarted, pid)
 		return nil
 	}
 
@@ -245,7 +259,7 @@ func (g *Guard) RunCtx(ctx context.Context) {
 			return
 		case <-exitC:
 			pid = -1
-			g.changeStatus(GuardStatusRunningStopped)
+			g.changeStatus(GuardStatusRunningStopped, -1)
 			restart.Reset(g.restartAfter)
 		case <-restart.C:
 			err := start()

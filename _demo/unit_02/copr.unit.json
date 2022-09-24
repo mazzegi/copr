@@ -1,6 +1,6 @@
 {
   "name": "unit_02",
-  "enabled": true,
+  "enabled": false,
   "program": "unit_02",
   "args": [
     "-bind=127.0.0.1:31002"

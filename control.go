@@ -14,7 +14,6 @@ import (
 type controllerUnit struct {
 	unit  Unit
 	guard *Guard
-	pid   int
 }
 
 func NewController(dir string) (*Controller, error) {
@@ -23,7 +22,9 @@ func NewController(dir string) (*Controller, error) {
 		return nil, errors.Wrapf(err, "load-units in %q", dir)
 	}
 
-	c := &Controller{}
+	c := &Controller{
+		unitConfigs: us,
+	}
 	for _, u := range us.units {
 		guard, err := NewGuard(
 			filepath.Join(u.Dir, u.Config.Program),
@@ -47,13 +48,16 @@ func NewController(dir string) (*Controller, error) {
 
 type Controller struct {
 	sync.RWMutex
-	units []*controllerUnit
+	unitConfigs *Units
+	units       []*controllerUnit
 }
 
-func (c *Controller) RunCtx(ctx context.Context) {
+func (c *Controller) RunCtx(ctx context.Context, guardsRunningC chan struct{}) {
+	log.Infof("controller: run")
 	c.Lock()
 	wg := sync.WaitGroup{}
 	for _, cu := range c.units {
+		log.Infof("controller: run %q", cu.unit.Config.Name)
 		wg.Add(1)
 		go func(g *Guard) {
 			defer wg.Done()
@@ -67,6 +71,8 @@ func (c *Controller) RunCtx(ctx context.Context) {
 		defer close(allDoneC)
 		wg.Wait()
 	}()
+	log.Infof("controller: loop")
+	close(guardsRunningC)
 	<-ctx.Done()
 
 	select {
@@ -79,54 +85,176 @@ func (c *Controller) RunCtx(ctx context.Context) {
 	}
 }
 
-func (c *Controller) StartAll() (messages []string, errors []string) {
+type ControllerResponse struct {
+	Messages []string
+	Errors   []string
+}
+
+func (cr *ControllerResponse) Msgf(pattern string, args ...any) {
+	cr.Messages = append(cr.Messages, fmt.Sprintf(pattern, args...))
+}
+
+func (cr *ControllerResponse) Errf(pattern string, args ...any) {
+	cr.Messages = append(cr.Messages, fmt.Sprintf(pattern, args...))
+}
+
+func (cr ControllerResponse) log() {
+	for _, m := range cr.Messages {
+		log.Infof("controller: %s", m)
+	}
+	for _, m := range cr.Errors {
+		log.Errorf("controller: %s", m)
+	}
+}
+
+func (c *Controller) StartAll() (resp ControllerResponse) {
 	c.Lock()
 	defer c.Unlock()
 	for _, cu := range c.units {
-		if cu.pid > -1 {
-			messages = append(messages, fmt.Sprintf("guard %q is already started with PID %d", cu.unit.Config.Name, cu.pid))
+		if cu.guard.IsStarted() {
+			resp.Msgf("guard %q is already started with PID %d", cu.unit.Config.Name, cu.guard.PID())
+			continue
+		}
+		if !cu.unit.Config.Enabled {
+			resp.Msgf("guard %q is disabled", cu.unit.Config.Name)
 			continue
 		}
 
 		pid, err := cu.guard.Start()
 		if err != nil {
-			errors = append(errors, fmt.Sprintf("ERROR: starting %q: %v", cu.unit.Config.Name, err))
+			resp.Errf("ERROR: starting %q: %v", cu.unit.Config.Name, err)
 			continue
 		}
-		cu.pid = pid
-		messages = append(messages, fmt.Sprintf("started %q with PID %d", cu.unit.Config.Name, pid))
+		resp.Msgf("started %q with PID %d", cu.unit.Config.Name, pid)
 	}
-	for _, m := range messages {
-		log.Infof("controller: %s", m)
-	}
-	for _, m := range errors {
-		log.Errorf("controller: %s", m)
-	}
+	resp.log()
 	return
 }
 
-func (c *Controller) StopAll() (messages []string, errors []string) {
+func (c *Controller) StopAll() (resp ControllerResponse) {
 	c.Lock()
 	defer c.Unlock()
 	for _, cu := range c.units {
-		if cu.pid < 0 {
-			messages = append(messages, fmt.Sprintf("guard %q is not started", cu.unit.Config.Name))
+		if !cu.guard.IsStarted() {
+			resp.Msgf("guard %q is not started", cu.unit.Config.Name)
 			continue
 		}
 
 		err := cu.guard.Stop()
 		if err != nil {
-			errors = append(errors, fmt.Sprintf("ERROR: stopping %q with PID %d: %v", cu.unit.Config.Name, cu.pid, err))
+			resp.Errf("ERROR: stopping %q with PID %d: %v", cu.unit.Config.Name, cu.guard.PID(), err)
 			continue
 		}
-		cu.pid = -1
-		messages = append(messages, fmt.Sprintf("stopped %q", cu.unit.Config.Name))
+		resp.Msgf("stopped %q", cu.unit.Config.Name)
 	}
-	for _, m := range messages {
-		log.Infof("controller: %s", m)
+	resp.log()
+	return
+}
+
+func (c *Controller) unitDo(unit string, do func(cu *controllerUnit, resp *ControllerResponse)) (resp ControllerResponse) {
+	c.Lock()
+	defer c.Unlock()
+	for _, cu := range c.units {
+		if cu.unit.Config.Name == unit {
+			do(cu, &resp)
+			return
+		}
 	}
-	for _, m := range errors {
-		log.Errorf("controller: %s", m)
+	resp.Errf("no such unit %q", unit)
+	resp.log()
+	return
+}
+
+func (c *Controller) Start(unit string) (resp ControllerResponse) {
+	return c.unitDo(unit, func(cu *controllerUnit, resp *ControllerResponse) {
+		if !cu.unit.Config.Enabled {
+			resp.Msgf("unit %q is disabled", unit)
+			return
+		}
+		if cu.guard.IsStarted() {
+			resp.Msgf("guard %q is already started with PID %d", cu.unit.Config.Name, cu.guard.PID())
+			return
+		}
+
+		pid, err := cu.guard.Start()
+		if err != nil {
+			resp.Errf("starting unit %q: %v", unit, err)
+		} else {
+			resp.Msgf("started %q with PID %d", cu.unit.Config.Name, pid)
+		}
+	})
+}
+
+func (c *Controller) Stop(unit string) (resp ControllerResponse) {
+	return c.unitDo(unit, func(cu *controllerUnit, resp *ControllerResponse) {
+		if !cu.guard.IsStarted() {
+			resp.Msgf("guard %q is not started", cu.unit.Config.Name)
+			return
+		}
+
+		err := cu.guard.Stop()
+		if err != nil {
+			resp.Errf("ERROR: stopping %q with PID %d: %v", cu.unit.Config.Name, cu.guard.PID(), err)
+			return
+		}
+		resp.Msgf("stopped %q", cu.unit.Config.Name)
+	})
+}
+
+func (c *Controller) Enable(unit string) (resp ControllerResponse) {
+	return c.unitDo(unit, func(cu *controllerUnit, resp *ControllerResponse) {
+		if cu.unit.Config.Enabled {
+			resp.Msgf("unit %q is already enabled", unit)
+			return
+		}
+		cu.unit.Config.Enabled = true
+		err := c.unitConfigs.SaveUnit(cu.unit)
+		if err != nil {
+			resp.Errf("enable unit %q: save: %v", unit, err)
+		} else {
+			resp.Msgf("enable unit %q", unit)
+		}
+	})
+}
+
+func (c *Controller) Disable(unit string) (resp ControllerResponse) {
+	return c.unitDo(unit, func(cu *controllerUnit, resp *ControllerResponse) {
+		if !cu.unit.Config.Enabled {
+			resp.Msgf("unit %q is already disabled", unit)
+			return
+		}
+		if cu.guard.IsStarted() {
+			err := cu.guard.Stop()
+			if err != nil {
+				resp.Errf("ERROR: stopping %q with PID %d: %v", cu.unit.Config.Name, cu.guard.PID(), err)
+				return
+			}
+			resp.Msgf("stopped %q", cu.unit.Config.Name)
+		}
+
+		cu.unit.Config.Enabled = false
+		err := c.unitConfigs.SaveUnit(cu.unit)
+		if err != nil {
+			resp.Errf("disable unit %q: save: %v", unit, err)
+		} else {
+			resp.Msgf("disable unit %q", unit)
+		}
+	})
+}
+
+func (c *Controller) Stat() (resp ControllerResponse) {
+	c.Lock()
+	defer c.Unlock()
+	for _, cu := range c.units {
+		if !cu.unit.Config.Enabled {
+			resp.Msgf("unit %q: disabled", cu.unit.Config.Name)
+			continue
+		}
+		if cu.guard.IsStarted() {
+			resp.Msgf("unit %q: enabled, started with PID %d", cu.unit.Config.Name, cu.guard.PID())
+		} else {
+			resp.Msgf("unit %q: enabled, not-started", cu.unit.Config.Name)
+		}
 	}
 	return
 }

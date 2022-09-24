@@ -99,26 +99,26 @@ func TestGuard(t *testing.T) {
 	assert(t, err == nil, "guard-start")
 
 	fmt.Printf("started with pid=%d\n", pid)
-	assertEqual(t, GuardStatusRunningStarted, guard.Status(), "status after started")
+	assertEqual(t, GuardStatusRunningStarted, guard.Status().RunningState, "status after started")
 
 	<-time.After(100 * time.Millisecond)
 	crash()
 	<-time.After(100 * time.Millisecond)
-	assertEqual(t, GuardStatusRunningStopped, guard.Status(), "status after crash")
+	assertEqual(t, GuardStatusRunningStopped, guard.Status().RunningState, "status after crash")
 
 	<-time.After(500 * time.Millisecond)
-	assertEqual(t, GuardStatusRunningStarted, guard.Status(), "status after restart")
+	assertEqual(t, GuardStatusRunningStarted, guard.Status().RunningState, "status after restart")
 
 	//
 	err = guard.Stop()
 	assert(t, err == nil, "guard-stop")
 	<-time.After(500 * time.Millisecond)
-	assertEqual(t, GuardStatusRunningStopped, guard.Status(), "status after stop")
+	assertEqual(t, GuardStatusRunningStopped, guard.Status().RunningState, "status after stop")
 
 	pid, err = guard.Start()
 	assert(t, err == nil, "guard-start")
 	fmt.Printf("started with pid=%d\n", pid)
-	assertEqual(t, GuardStatusRunningStarted, guard.Status(), "status after started")
+	assertEqual(t, GuardStatusRunningStarted, guard.Status().RunningState, "status after started")
 
 	cancel()
 	select {
