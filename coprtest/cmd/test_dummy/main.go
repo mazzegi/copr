@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/mazzegi/copr/coprtest"
 )
@@ -38,6 +40,9 @@ func main() {
 			case coprtest.TestActionCrash:
 				w.WriteHeader(http.StatusOK)
 				os.Exit(1)
+			case coprtest.TestActionStress:
+				go makeSomeStress(1 * time.Minute)
+				w.WriteHeader(http.StatusOK)
 			default:
 				http.Error(w, fmt.Sprintf("unknown action %q", cmd.Action), http.StatusBadRequest)
 				return
@@ -50,4 +55,24 @@ func main() {
 	<-ctx.Done()
 	server.Shutdown(context.Background())
 	logf("done")
+}
+
+func makeSomeStress(dur time.Duration) {
+	logf("make stress for %s", dur)
+	defer logf("make stress done")
+	timer := time.NewTimer(dur)
+	var pis []float64
+	for {
+		select {
+		case <-timer.C:
+			return
+		default:
+			var pi float64
+			for k := float64(0); k < float64(10000); k += 1.0 {
+				pi += 1 / math.Pow(16, k) * (4/(8*k+1) - 2/(8*k+4) - 1/(8*k+5) - 1/(8*k+6))
+			}
+			pis = append(pis, pi)
+		}
+	}
+
 }

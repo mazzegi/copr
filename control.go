@@ -10,12 +10,14 @@ import (
 
 	"github.com/mazzegi/log"
 	"github.com/pkg/errors"
+	"github.com/shirou/gopsutil/process"
 )
 
 type controllerUnit struct {
 	unit  Unit
 	guard *Guard
 	stats Stats
+	proc  *process.Process
 }
 
 func NewController(dir string) (*Controller, error) {
@@ -56,6 +58,7 @@ type Controller struct {
 	runC        chan *controllerUnit
 }
 
+// TODO: route all requests and action over an extra channel and handle them in run
 func (c *Controller) RunCtx(ctx context.Context, guardsRunningC chan struct{}) {
 	log.Infof("controller: run")
 	c.Lock()
@@ -138,7 +141,17 @@ func (c *Controller) collectStats() {
 			cu.stats = Stats{}
 			continue
 		}
-		err := CollectStats(cu.guard.PID(), &cu.stats)
+		pid := int32(cu.guard.PID())
+		if cu.proc == nil || pid != cu.proc.Pid {
+			proc, err := process.NewProcess(pid)
+			if err != nil {
+				log.Warnf("controller-stats: new-process for PID %d: %v", pid, err)
+				continue
+			}
+			cu.proc = proc
+		}
+
+		err := CollectStats(cu.proc, &cu.stats)
 		if err != nil {
 			log.Warnf("collect stats for unit %q, pid %d", cu.unit.Name, cu.guard.PID())
 			continue

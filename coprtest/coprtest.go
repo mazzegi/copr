@@ -1,7 +1,8 @@
 package coprtest
 
 const (
-	TestActionCrash = "crash"
+	TestActionCrash  = "crash"
+	TestActionStress = "stress"
 )
 
 type TestCommand struct {

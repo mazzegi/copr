@@ -58,12 +58,7 @@ func (s Stats) String() string {
 }
 
 // GetStats collects the stats for the passed process
-func CollectStats(pid int, stats *Stats) error {
-	proc, err := process.NewProcess(int32(pid))
-	if err != nil {
-		return errors.Wrapf(err, "new-process for PID %d", pid)
-	}
-
+func CollectStats(proc *process.Process, stats *Stats) error {
 	pmi, err := proc.MemoryInfo()
 	if err != nil {
 		return errors.Wrap(err, "memory-info")
@@ -93,7 +88,7 @@ func CollectStats(pid int, stats *Stats) error {
 	//
 	currCPUPerc, err := proc.Percent(0)
 	if err != nil {
-		log.Warnf("PID %d, proc-percent (CPU): %v", pid, err)
+		log.Warnf("PID %d, proc-percent (CPU): %v", proc.Pid, err)
 		return nil
 	}
 	stats.CPUPerc = (currCPUPerc + stats._lastCPUPerc) / 2.0
