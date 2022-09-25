@@ -29,7 +29,7 @@ func LoadFile(path string, pwd string) (*File, error) {
 
 	dec, err := decrypt(bs, pwd)
 	if err != nil {
-		return nil, errors.Wrap(err, "descrpyt")
+		return nil, errors.Wrap(err, "decrpyt")
 	}
 	return &File{
 		path: path,

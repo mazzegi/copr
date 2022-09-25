@@ -27,13 +27,14 @@ type Unit struct {
 	Config UnitConfig
 }
 
-func LoadUnits(dir string) (*Units, error) {
+func LoadUnits(dir string, secs *Secrets) (*Units, error) {
 	adir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, errors.Wrapf(err, "abs-dir %q", dir)
 	}
 	us := &Units{
-		dir: adir,
+		dir:     adir,
+		secrets: secs,
 	}
 	os.MkdirAll(filepath.Join(adir, archiveDir), os.ModePerm)
 	err = us.Load()
@@ -44,8 +45,9 @@ func LoadUnits(dir string) (*Units, error) {
 }
 
 type Units struct {
-	dir   string
-	units []Unit
+	dir     string
+	units   []Unit
+	secrets *Secrets
 }
 
 const (
@@ -71,16 +73,17 @@ func (us *Units) Load() error {
 			continue
 		}
 
-		f, err := os.Open(unitFile)
+		bs, err := os.ReadFile(unitFile)
 		if err != nil {
-			return errors.Wrapf(err, "failed to open unit file %q", unitFile)
+			return errors.Wrapf(err, "read unit file %q", unitFile)
 		}
-		defer f.Close()
+		ebs := []byte(us.secrets.Expanded(string(bs)))
 		var uc UnitConfig
-		err = json.NewDecoder(f).Decode(&uc)
+		err = json.Unmarshal(ebs, &uc)
 		if err != nil {
 			return errors.Wrapf(err, "failed to json-decode unit file %q", unitFile)
 		}
+
 		us.units = append(us.units, Unit{
 			Name:   fi.Name(),
 			Dir:    filepath.Join(us.dir, fi.Name()),

@@ -20,8 +20,8 @@ type controllerUnit struct {
 	proc  *process.Process
 }
 
-func NewController(dir string) (*Controller, error) {
-	us, err := LoadUnits(dir)
+func NewController(dir string, secs *Secrets) (*Controller, error) {
+	us, err := LoadUnits(dir, secs)
 	if err != nil {
 		return nil, errors.Wrapf(err, "load-units in %q", dir)
 	}
@@ -31,6 +31,7 @@ func NewController(dir string) (*Controller, error) {
 		runC:        make(chan *controllerUnit),
 	}
 	for _, u := range us.units {
+		log.Debugf("controller: new-guard: prg=%q; args=%v; env=%v", u.Config.Program, u.Config.Args, u.Config.Env)
 		guard, err := NewGuard(
 			filepath.Join(u.Dir, u.Config.Program),
 			WithArgs(u.Config.Args...),

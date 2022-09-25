@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"path/filepath"
 
 	"github.com/mazzegi/copr"
 	"github.com/mazzegi/log"
@@ -21,9 +22,16 @@ func main() {
 func run() error {
 	bind := flag.String("bind", ":21001", "http-bind-address")
 	dir := flag.String("dir", "../../_demo", "workspace directory")
+	sec := flag.String("sec", "", "copr secret password")
 	flag.Parse()
 
-	controller, err := copr.NewController(*dir)
+	secPath := filepath.Join(*dir, copr.SecretFile)
+	secs, err := copr.NewSecrets(secPath, *sec)
+	if err != nil {
+		return errors.Wrapf(err, "copr-new-secrets at %q", secPath)
+	}
+
+	controller, err := copr.NewController(*dir, secs)
 	if err != nil {
 		return errors.Wrapf(err, "new controller in %q", *dir)
 	}

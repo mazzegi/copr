@@ -6,7 +6,8 @@
   ],
   "env": [
     "E1=V1",
-    "E2=V2"
+    "E2=V2",
+    "dbdsn=hostbla;{svchub.db.pwd};pup"
   ],
   "restart-after-sec": 5
 }
