@@ -17,3 +17,6 @@
 # tmp files and folders
 tmp
 .tmp
+
+# copr secrets
+copr.secrets
