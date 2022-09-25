@@ -52,7 +52,11 @@ func main() {
 func exec(host string, cmd string, args []string) (copr.CTLResponse, error) {
 	switch cmd {
 	case "stat":
-		return get(host, "stat")
+		if len(args) > 0 {
+			return get(host, fmt.Sprintf("stat?unit=%s", args[0]))
+		} else {
+			return get(host, "stat")
+		}
 	case "start-all":
 		return postCommand(host, "start-all")
 	case "stop-all":

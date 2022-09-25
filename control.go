@@ -59,6 +59,7 @@ type Controller struct {
 }
 
 // TODO: route all requests and action over an extra channel and handle them in run
+// TODO: pass from ctx derived cancel ctx to guard, to cancel individual guards
 func (c *Controller) RunCtx(ctx context.Context, guardsRunningC chan struct{}) {
 	log.Infof("controller: run")
 	c.Lock()
@@ -318,6 +319,20 @@ func (c *Controller) Stat() (resp ControllerResponse) {
 		}
 	}
 	return
+}
+
+func (c *Controller) StatUnit(unit string) (resp ControllerResponse) {
+	return c.unitDo(unit, func(cu *controllerUnit, resp *ControllerResponse) {
+		if !cu.unit.Config.Enabled {
+			resp.Msgf("unit %q: disabled", cu.unit.Name)
+			return
+		}
+		if cu.guard.IsStarted() {
+			resp.Msgf("unit %q: enabled, started with PID %d: %s", cu.unit.Name, cu.guard.PID(), cu.stats.String())
+		} else {
+			resp.Msgf("unit %q: enabled, not-started", cu.unit.Name)
+		}
+	})
 }
 
 func (c *Controller) Deploy(name string, dir string) (resp ControllerResponse, err error) {

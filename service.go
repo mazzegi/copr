@@ -97,7 +97,13 @@ func (s *Service) handleGET(w http.ResponseWriter, r *http.Request) {
 	elt, tail, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	switch elt {
 	case "stat":
-		resp := s.controller.Stat()
+		var resp ControllerResponse
+		unit := r.URL.Query().Get("unit")
+		if unit == "" {
+			resp = s.controller.Stat()
+		} else {
+			resp = s.controller.StatUnit(unit)
+		}
 		s.replyMsg(w, http.StatusOK, resp)
 	default:
 		resp := ControllerResponse{}
