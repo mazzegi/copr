@@ -6,6 +6,7 @@ require (
 	github.com/mazzegi/log v0.0.0-20200601101706-01eae2241ec0
 	github.com/pkg/errors v0.9.1
 	github.com/shirou/gopsutil v3.21.11+incompatible
+	golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1
 )
 
 require (
