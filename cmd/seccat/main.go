@@ -4,13 +4,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/mazzegi/copr"
 	"github.com/mazzegi/copr/secrets"
 	"github.com/pkg/errors"
 	"golang.org/x/term"
-)
-
-const (
-	secretFile = "copr.secrets"
 )
 
 func main() {
@@ -22,6 +19,10 @@ func main() {
 }
 
 func run() error {
+	secretFile := copr.SecretFile
+	if len(os.Args) > 1 {
+		secretFile = os.Args[1]
+	}
 	if _, err := os.Stat(secretFile); err != nil {
 		return errors.Errorf("Theres no secret file in this directory.")
 	}
