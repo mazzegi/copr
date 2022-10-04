@@ -31,12 +31,17 @@ func run() error {
 		return errors.Wrapf(err, "copr-new-secrets at %q", secPath)
 	}
 
+	apiKey, ok := secs.Find("copr.apikey")
+	if !ok {
+		return errors.Errorf("found no apikey")
+	}
+
 	controller, err := copr.NewController(*dir, secs)
 	if err != nil {
 		return errors.Wrapf(err, "new controller in %q", *dir)
 	}
 
-	s, err := copr.NewService(*bind, controller)
+	s, err := copr.NewService(*bind, controller, apiKey)
 	if err != nil {
 		return errors.Wrap(err, "new-service")
 	}

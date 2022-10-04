@@ -221,6 +221,7 @@ func (c *Controller) unitDo(unit string, do func(cu *controllerUnit, resp *Contr
 	defer c.Unlock()
 	if cu, ok := c.findUnit(unit); ok {
 		do(cu, &resp)
+		resp.log()
 		return
 	}
 	resp.Errf("no such unit %q", unit)

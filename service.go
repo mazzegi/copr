@@ -22,7 +22,7 @@ type CTLResponse struct {
 	CtrlErrors   []string `json:"ctrl-errors,omitempty"`
 }
 
-func NewService(bind string, controller *Controller) (*Service, error) {
+func NewService(bind string, controller *Controller, apiKey string) (*Service, error) {
 	l, err := net.Listen("tcp", bind)
 	if err != nil {
 		return nil, errors.Wrapf(err, "listen-tcp on %q", bind)
@@ -31,6 +31,7 @@ func NewService(bind string, controller *Controller) (*Service, error) {
 	s := &Service{
 		listener:   l,
 		server:     &http.Server{},
+		apiKey:     apiKey,
 		controller: controller,
 	}
 	return s, nil
@@ -39,6 +40,7 @@ func NewService(bind string, controller *Controller) (*Service, error) {
 type Service struct {
 	listener   net.Listener
 	server     *http.Server
+	apiKey     string
 	controller *Controller
 }
 
@@ -71,7 +73,25 @@ func (s *Service) RunCtx(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) replyMsg(w http.ResponseWriter, status int, resp ControllerResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(CTLResponse{
+		CtrlMessages: resp.Messages,
+		CtrlErrors:   resp.Errors,
+	})
+}
+
 func (s *Service) handleHttp(w http.ResponseWriter, r *http.Request) {
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	apiKey := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer"))
+	if apiKey != s.apiKey {
+		s.replyMsg(w, http.StatusUnauthorized, ControllerResponse{
+			Errors: []string{"unauthorized"},
+		})
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		s.handleGET(w, r)
@@ -80,15 +100,6 @@ func (s *Service) handleHttp(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
-}
-
-func (s *Service) replyMsg(w http.ResponseWriter, status int, resp ControllerResponse) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(CTLResponse{
-		CtrlMessages: resp.Messages,
-		CtrlErrors:   resp.Errors,
-	})
 }
 
 func (s *Service) handleGET(w http.ResponseWriter, r *http.Request) {

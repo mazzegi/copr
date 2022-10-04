@@ -15,10 +15,6 @@ const (
 	SecretFile = "copr.secrets"
 )
 
-var escapeTOMLReplacer = strings.NewReplacer(
-	`\`, `\\`,
-)
-
 func NewSecrets(path string, pwd string) (*Secrets, error) {
 	f, err := secrets.LoadFile(path, pwd)
 	if err != nil {
@@ -26,7 +22,6 @@ func NewSecrets(path string, pwd string) (*Secrets, error) {
 	}
 
 	vals := map[string]string{}
-	//_, err = toml.Decode(escapeTOMLReplacer.Replace(f.String()), &vals)
 	_, err = toml.Decode(f.String(), &vals)
 	if err != nil {
 		return nil, errors.Wrap(err, "toml-decode")
