@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/mazzegi/log"
 	"github.com/pkg/errors"
@@ -24,6 +25,7 @@ type StatsDescriptor struct {
 	RLimitSoftFD uint64
 	RLimitHardFD uint64
 	NumFD        uint64
+	StartedAt    time.Time
 }
 
 const (
@@ -57,9 +59,18 @@ func (s StatsDescriptor) VMH() string {
 
 // String outputs the stats as string
 func (s StatsDescriptor) String() string {
-	return fmt.Sprintf("%q: enabled=%t, started=%t, pid=%d, rss=%s, vm=%s, cpu=%.1f, mem=%.1f sl=%d, hl=%d, fds=%d",
+	if !s.Enabled {
+		return fmt.Sprintf("%q: disabled", s.Name)
+	}
+	if !s.Started {
+		return fmt.Sprintf("%q: enabled - not started", s.Name)
+	}
+
+	return fmt.Sprintf("%q: enabled=%t, started=%t, pid=%d, rss=%s, vm=%s, cpu=%.1f, mem=%.1f sl=%d, hl=%d, fds=%d, startedAt=%s, uptime=%s",
 		s.Name, s.Enabled, s.Started,
-		s.PID, s.RSSH(), s.VMH(), s.CPUPerc, s.MEMPerc, s.RLimitSoftFD, s.RLimitHardFD, s.NumFD)
+		s.PID, s.RSSH(), s.VMH(), s.CPUPerc, s.MEMPerc, s.RLimitSoftFD, s.RLimitHardFD, s.NumFD,
+		s.StartedAt.Local().Format("02.01.2006 15:04:05"), time.Since(s.StartedAt).Round(1*time.Second),
+	)
 }
 
 type stats struct {
@@ -73,8 +84,9 @@ type stats struct {
 	rlimitsoftfd uint64
 	rlimithardfd uint64
 	numfd        uint64
-	_lastCPUPerc float64
+	startedAt    time.Time
 	proc         *process.Process
+	_lastCPUPerc float64
 }
 
 func (s stats) descriptor() StatsDescriptor {
@@ -90,6 +102,7 @@ func (s stats) descriptor() StatsDescriptor {
 		RLimitSoftFD: s.rlimitsoftfd,
 		RLimitHardFD: s.rlimithardfd,
 		NumFD:        s.numfd,
+		StartedAt:    s.startedAt,
 	}
 }
 
@@ -202,6 +215,7 @@ func (c *UnitStatsCache) started(name string, pid int) {
 		}
 		us.pid = pid
 		us.proc = proc
+		us.startedAt = time.Now().UTC()
 	}
 }
 
