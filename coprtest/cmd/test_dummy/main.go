@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"syscall"
 	"time"
 
@@ -43,6 +44,8 @@ func main() {
 			case coprtest.TestActionStress:
 				go makeSomeStress(1 * time.Minute)
 				w.WriteHeader(http.StatusOK)
+			case coprtest.TestActionProbe:
+				w.WriteHeader(http.StatusOK)
 			default:
 				http.Error(w, fmt.Sprintf("unknown action %q", cmd.Action), http.StatusBadRequest)
 				return
@@ -65,6 +68,9 @@ func makeSomeStress(dur time.Duration) {
 	for {
 		select {
 		case <-timer.C:
+			for i := 0; i < 5; i++ {
+				fmt.Println(pis[i])
+			}
 			return
 		default:
 			var pi float64
@@ -72,7 +78,7 @@ func makeSomeStress(dur time.Duration) {
 				pi += 1 / math.Pow(16, k) * (4/(8*k+1) - 2/(8*k+4) - 1/(8*k+5) - 1/(8*k+6))
 			}
 			pis = append(pis, pi)
+			sort.Float64s(pis)
 		}
 	}
-
 }

@@ -148,7 +148,7 @@ func (s *Service) handlePOST(w http.ResponseWriter, r *http.Request) {
 	case "deploy":
 		resp, err := s.deploy(r)
 		if err != nil {
-			resp.Error(err)
+			resp.AddError(err)
 			s.replyMsg(w, http.StatusInternalServerError, resp)
 		} else {
 			s.replyMsg(w, http.StatusOK, resp)

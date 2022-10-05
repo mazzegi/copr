@@ -166,7 +166,7 @@ func (c *Controller) startAll() (resp CommandResponse) {
 		uresp := c.start(cu.unit.Name)
 		resp.merge(uresp)
 	}
-	resp.log()
+	//resp.log()
 	return
 }
 
@@ -175,7 +175,7 @@ func (c *Controller) stopAll() (resp CommandResponse) {
 		uresp := c.stop(cu.unit.Name)
 		resp.merge(uresp)
 	}
-	resp.log()
+	//resp.log()
 	return
 }
 
@@ -215,7 +215,7 @@ func (c *Controller) start(unit string) (resp CommandResponse) {
 			resp.Errorf("starting unit %q: %v", unit, err)
 			return
 		}
-		c.statCache.started(cu.unit.Name, pid)
+		//c.statCache.started(cu.unit.Name, pid)
 		resp.AddMsg("started %q with PID %d", cu.unit.Name, pid)
 	})
 }
@@ -232,7 +232,7 @@ func (c *Controller) stop(unit string) (resp CommandResponse) {
 			resp.Errorf("ERROR: stopping %q with PID %d: %v", cu.unit.Name, cu.guard.PID(), err)
 			return
 		}
-		c.statCache.stopped(cu.unit.Name)
+		//c.statCache.stopped(cu.unit.Name)
 		resp.AddMsg("stopped %q", cu.unit.Name)
 	})
 }
@@ -266,7 +266,7 @@ func (c *Controller) disable(unit string) (resp CommandResponse) {
 				resp.Errorf("ERROR: stopping %q with PID %d: %v", cu.unit.Name, cu.guard.PID(), err)
 				return
 			}
-			c.statCache.stopped(cu.unit.Name)
+			//c.statCache.stopped(cu.unit.Name)
 			resp.AddMsg("stopped %q", cu.unit.Name)
 		}
 
@@ -284,7 +284,7 @@ func (c *Controller) disable(unit string) (resp CommandResponse) {
 func (c *Controller) deployCreate(unit string, dir string) (newUnit *controllerUnit, resp CommandResponse) {
 	u, err := c.unitConfigs.Create(unit, dir)
 	if err != nil {
-		resp.Error(errors.Wrapf(err, "create unit-config %q in %q", unit, dir))
+		resp.AddError(errors.Wrapf(err, "create unit-config %q in %q", unit, dir))
 		return nil, resp
 	}
 	resp.AddMsg("unit %q: created", unit)
@@ -297,7 +297,7 @@ func (c *Controller) deployCreate(unit string, dir string) (newUnit *controllerU
 		WithRestartAfter(time.Second*time.Duration(u.Config.RestartAfterSec)),
 	)
 	if err != nil {
-		resp.Error(errors.Wrapf(err, "new-guard for unit %q", u.Name))
+		resp.AddError(errors.Wrapf(err, "new-guard for unit %q", u.Name))
 		return nil, resp
 	}
 
@@ -320,7 +320,7 @@ func (c *Controller) deployUpdate(cu *controllerUnit, dir string) (resp CommandR
 	//
 	u, err := c.unitConfigs.Update(cu.unit.Name, dir)
 	if err != nil {
-		resp.Error(errors.Wrapf(err, "%q: update-unit-config", cu.unit.Name))
+		resp.AddError(errors.Wrapf(err, "%q: update-unit-config", cu.unit.Name))
 		return resp
 	}
 	cu.unit = u
@@ -341,7 +341,7 @@ func (c *Controller) deployUpdate(cu *controllerUnit, dir string) (resp CommandR
 		}),
 	)
 	if err != nil {
-		resp.Error(errors.Wrapf(err, "%q: update-guard-options", cu.unit.Name))
+		resp.AddError(errors.Wrapf(err, "%q: update-guard-options", cu.unit.Name))
 		return resp
 	}
 	resp.AddMsg("unit %q: updated", cu.unit.Name)

@@ -24,12 +24,19 @@ func (cr *CommandResponse) Errorf(pattern string, args ...any) {
 	cr.Errors = append(cr.Errors, errors.Errorf(pattern, args...))
 }
 
-func (cr *CommandResponse) Error(err error) {
+func (cr *CommandResponse) AddError(err error) {
 	cr.Errors = append(cr.Errors, err)
 }
 
-func (cr *CommandResponse) HasErrors() bool {
+func (cr CommandResponse) HasErrors() bool {
 	return len(cr.Errors) > 0
+}
+
+func (cr CommandResponse) Error() error {
+	if len(cr.Errors) == 0 {
+		return nil
+	}
+	return errors.Errorf(strings.Join(cr.ErrorStrings(), "\n"))
 }
 
 func (cr CommandResponse) log() {
@@ -48,7 +55,7 @@ func (cr *CommandResponse) merge(ocr CommandResponse) {
 
 //
 
-func (cr *CommandResponse) ErrorStrings() []string {
+func (cr CommandResponse) ErrorStrings() []string {
 	esl := make([]string, len(cr.Errors))
 	for i, e := range cr.Errors {
 		esl[i] = e.Error()
@@ -166,7 +173,7 @@ func (c *Controller) Deploy(unit string, dir string) CommandResponse {
 	}
 	err := ValidateUnitDir(dir)
 	if err != nil {
-		resp.Error(errors.Wrapf(err, "validate unit-dir %q", dir))
+		resp.AddError(errors.Wrapf(err, "validate unit-dir %q", dir))
 		return resp
 	}
 
@@ -180,7 +187,7 @@ func (c *Controller) Stat(unit string) CommandResponse {
 	var resp CommandResponse
 	sd, err := c.statCache.statsDescriptor(unit)
 	if err != nil {
-		resp.Error(errors.Wrapf(err, "stats-descriptor of %q", unit))
+		resp.AddError(errors.Wrapf(err, "stats-descriptor of %q", unit))
 		return resp
 	}
 	return CommandResponse{Data: sd, Messages: []string{sd.String()}}

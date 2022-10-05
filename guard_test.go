@@ -46,20 +46,26 @@ func sendRequest(url string, cmd coprtest.TestCommand) error {
 	return nil
 }
 
-func assert(t *testing.T, cond bool, msg string, args ...any) {
-	if !cond {
-		t.Fatalf("assert: "+msg, args...)
+func assertEqual[T comparable](t *testing.T, want T, have T, msg string, args ...any) {
+	if want != have {
+		t.Fatalf(fmt.Sprintf("assert-equal: want=%v, have=%v: ", want, have)+msg, args...)
 	}
 }
 
-func assertEqual[T comparable](t *testing.T, want T, have T, msg string, args ...any) {
-	if want != have {
-		t.Fatalf(fmt.Sprintf("assert-equal: want=%v, have=%v:", want, have)+msg, args...)
+func assertNoErr(t *testing.T, err error, msg string, args ...any) {
+	if err != nil {
+		t.Fatalf(fmt.Sprintf("assert-no-error: want=no-error, have=%v: ", err)+msg, args...)
+	}
+}
+
+func assertErr(t *testing.T, err error, msg string, args ...any) {
+	if err == nil {
+		t.Fatalf("assert-error: want=error, have=no-error: "+msg, args...)
 	}
 }
 
 func TestGuard(t *testing.T) {
-	bindir := "tmp"
+	bindir := "tmp_test_guard"
 	name := "dummy"
 	dummyBindAddr := "127.0.0.1:21001"
 	dummyBindArg := "-bind=" + dummyBindAddr
@@ -72,11 +78,11 @@ func TestGuard(t *testing.T) {
 	}
 
 	err := os.MkdirAll(bindir, os.ModePerm)
-	assert(t, err == nil, "mkdirall %q", bindir)
+	assertNoErr(t, err, "mkdirall %q", bindir)
 	defer os.RemoveAll(bindir)
 
 	err = buildPrg(bindir, name)
-	assert(t, err == nil, "build-prg")
+	assertNoErr(t, err, "build-prg")
 
 	binPath := filepath.Join(bindir, name)
 	guard, err := NewGuard(
@@ -85,7 +91,7 @@ func TestGuard(t *testing.T) {
 		WithKillTimeout(500*time.Millisecond),
 		WithRestartAfter(500*time.Millisecond),
 	)
-	assert(t, err == nil, "new-guard")
+	assertNoErr(t, err, "new-guard")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	wc := make(chan struct{})
@@ -96,7 +102,7 @@ func TestGuard(t *testing.T) {
 
 	//start
 	pid, err := guard.Start()
-	assert(t, err == nil, "guard-start")
+	assertNoErr(t, err, "guard-start")
 
 	fmt.Printf("started with pid=%d\n", pid)
 	assertEqual(t, GuardStatusRunningStarted, guard.Status().RunningState, "status after started")
@@ -111,12 +117,12 @@ func TestGuard(t *testing.T) {
 
 	//
 	err = guard.Stop()
-	assert(t, err == nil, "guard-stop")
+	assertNoErr(t, err, "guard-stop")
 	<-time.After(500 * time.Millisecond)
 	assertEqual(t, GuardStatusRunningStopped, guard.Status().RunningState, "status after stop")
 
 	pid, err = guard.Start()
-	assert(t, err == nil, "guard-start")
+	assertNoErr(t, err, "guard-start")
 	fmt.Printf("started with pid=%d\n", pid)
 	assertEqual(t, GuardStatusRunningStarted, guard.Status().RunningState, "status after started")
 
