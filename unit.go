@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mazzegi/log"
 	"github.com/pkg/errors"
 )
 
@@ -66,29 +67,12 @@ func (us *Units) Load() error {
 		if fi.Name() == archiveDir {
 			continue
 		}
-
-		//
-		unitFile := filepath.Join(us.dir, fi.Name(), "copr.unit.json")
-		if _, err := os.Stat(unitFile); err != nil {
+		u, err := us.loadUnit(fi.Name())
+		if err != nil {
+			log.Warnf("load-unit %q: %v", fi.Name(), err)
 			continue
 		}
-
-		bs, err := os.ReadFile(unitFile)
-		if err != nil {
-			return errors.Wrapf(err, "read unit file %q", unitFile)
-		}
-		ebs := []byte(us.secrets.Expanded(string(bs)))
-		var uc UnitConfig
-		err = json.Unmarshal(ebs, &uc)
-		if err != nil {
-			return errors.Wrapf(err, "failed to json-decode unit file %q", unitFile)
-		}
-
-		us.units = append(us.units, Unit{
-			Name:   fi.Name(),
-			Dir:    filepath.Join(us.dir, fi.Name()),
-			Config: uc,
-		})
+		us.units = append(us.units, u)
 	}
 	return nil
 }
@@ -96,16 +80,16 @@ func (us *Units) Load() error {
 func (us *Units) loadUnit(unit string) (Unit, error) {
 	unitFile := filepath.Join(us.dir, unit, "copr.unit.json")
 	if _, err := os.Stat(unitFile); err != nil {
-		return Unit{}, errors.Wrapf(err, "no unit file %q", unitFile)
+		return Unit{}, errors.Errorf("unit file does not exist for %q", unit)
 	}
 
-	f, err := os.Open(unitFile)
+	bs, err := os.ReadFile(unitFile)
 	if err != nil {
-		return Unit{}, errors.Wrapf(err, "failed to open unit file %q", unitFile)
+		return Unit{}, errors.Wrapf(err, "read unit file %q", unitFile)
 	}
-	defer f.Close()
+	ebs := []byte(us.secrets.Expanded(string(bs)))
 	var uc UnitConfig
-	err = json.NewDecoder(f).Decode(&uc)
+	err = json.Unmarshal(ebs, &uc)
 	if err != nil {
 		return Unit{}, errors.Wrapf(err, "failed to json-decode unit file %q", unitFile)
 	}

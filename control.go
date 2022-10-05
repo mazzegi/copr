@@ -113,6 +113,7 @@ loop:
 		case cmd := <-c.commandC:
 			switch cmd := cmd.(type) {
 			case *CommandStartAll:
+				log.Debugf("start-all-command")
 				cmd.resultC <- c.startAll()
 			case *CommandStopAll:
 				cmd.resultC <- c.stopAll()
