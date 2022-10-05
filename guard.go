@@ -70,6 +70,13 @@ func WithRestartAfter(d time.Duration) GuardOption {
 	}
 }
 
+func WithOnChange(onChange func(rs GuardRunningState, pid int)) GuardOption {
+	return func(g *Guard) error {
+		g.onChange = onChange
+		return nil
+	}
+}
+
 func NewGuard(programm string, opts ...GuardOption) (*Guard, error) {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -84,6 +91,7 @@ func NewGuard(programm string, opts ...GuardOption) (*Guard, error) {
 		actionC:      make(chan any),
 		killTimeout:  5 * time.Second,
 		restartAfter: 5 * time.Second,
+		onChange:     func(rs GuardRunningState, pid int) {},
 	}
 	for _, o := range opts {
 		err := o(g)
@@ -147,6 +155,7 @@ type Guard struct {
 	restartAfter time.Duration
 	statusMx     sync.RWMutex
 	status       GuardState
+	onChange     func(rs GuardRunningState, pid int)
 }
 
 func (g *Guard) Start() (pid int, err error) {
@@ -187,7 +196,11 @@ func (g *Guard) logErr(pattern string, args ...any) {
 
 func (g *Guard) changeStatus(rs GuardRunningState, pid int) {
 	g.statusMx.Lock()
-	defer g.statusMx.Unlock()
+	defer func() {
+		// to prevent access to locked guard in callback
+		g.statusMx.Unlock()
+		g.onChange(rs, pid)
+	}()
 	g.status.RunningState = rs
 	g.status.PID = pid
 }

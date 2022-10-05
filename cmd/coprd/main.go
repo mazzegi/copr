@@ -22,7 +22,7 @@ func main() {
 func run() error {
 	bind := flag.String("bind", ":21001", "http-bind-address")
 	dir := flag.String("dir", "../../_demo", "workspace directory")
-	sec := flag.String("sec", "", "copr secret password")
+	sec := flag.String("sec", "sst", "copr secret password")
 	flag.Parse()
 
 	secPath := filepath.Join(*dir, copr.SecretFile)

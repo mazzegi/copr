@@ -2,22 +2,18 @@ package copr
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/mazzegi/log"
 	"github.com/pkg/errors"
-	"github.com/shirou/gopsutil/process"
 )
 
 type controllerUnit struct {
-	unit  Unit
-	guard *Guard
-	stats Stats
-	proc  *process.Process
+	unit   Unit
+	guard  *Guard
+	cancel func()
 }
 
 func NewController(dir string, secs *Secrets) (*Controller, error) {
@@ -28,9 +24,11 @@ func NewController(dir string, secs *Secrets) (*Controller, error) {
 
 	c := &Controller{
 		unitConfigs: us,
-		runC:        make(chan *controllerUnit),
+		commandC:    make(chan Command),
+		statCache:   NewUnitStatsCache(),
 	}
 	for _, u := range us.units {
+		u := u
 		log.Debugf("controller: new-guard: prg=%q; args=%v; env=%v", u.Config.Program, u.Config.Args, u.Config.Env)
 		guard, err := NewGuard(
 			filepath.Join(u.Dir, u.Config.Program),
@@ -38,6 +36,14 @@ func NewController(dir string, secs *Secrets) (*Controller, error) {
 			WithEnv(u.Config.Env...),
 			WithWd(u.Dir),
 			WithRestartAfter(time.Second*time.Duration(u.Config.RestartAfterSec)),
+			WithOnChange(func(rs GuardRunningState, pid int) {
+				switch rs {
+				case GuardStatusRunningStarted:
+					c.statCache.started(u.Name, pid)
+				case GuardStatusRunningStopped:
+					c.statCache.stopped(u.Name)
+				}
+			}),
 		)
 		if err != nil {
 			return nil, errors.Wrapf(err, "new-guard for unit %q", u.Name)
@@ -47,6 +53,7 @@ func NewController(dir string, secs *Secrets) (*Controller, error) {
 			unit:  u,
 			guard: guard,
 		})
+		c.statCache.add(u.Name, u.Config.Enabled)
 	}
 
 	return c, nil
@@ -56,24 +63,40 @@ type Controller struct {
 	sync.RWMutex
 	unitConfigs *Units
 	units       []*controllerUnit
-	runC        chan *controllerUnit
+	commandC    chan Command
+	statCache   *UnitStatsCache
 }
 
-// TODO: route all requests and action over an extra channel and handle them in run
-// TODO: pass from ctx derived cancel ctx to guard, to cancel individual guards
-func (c *Controller) RunCtx(ctx context.Context, guardsRunningC chan struct{}) {
+func (c *Controller) RunCtx(ctx context.Context) {
 	log.Infof("controller: run")
 	c.Lock()
 	wg := sync.WaitGroup{}
 	for _, cu := range c.units {
 		log.Infof("controller: run %q", cu.unit.Name)
 		wg.Add(1)
+		gctx, cancel := context.WithCancel(ctx)
+		cu.cancel = cancel
 		go func(g *Guard) {
 			defer wg.Done()
-			g.RunCtx(ctx)
+			g.RunCtx(gctx)
 		}(cu.guard)
 	}
 	c.Unlock()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		timer := time.NewTimer(5 * time.Second)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				c.statCache.collect()
+				timer.Reset(5 * time.Second)
+			}
+		}
+	}()
 
 	allDoneC := make(chan struct{})
 	go func() {
@@ -81,27 +104,52 @@ func (c *Controller) RunCtx(ctx context.Context, guardsRunningC chan struct{}) {
 		wg.Wait()
 	}()
 	log.Infof("controller: loop")
-	close(guardsRunningC)
 
-	func() {
-		timer := time.NewTimer(0)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-timer.C:
-				c.collectStats()
-				timer.Reset(5 * time.Second)
-			case cu := <-c.runC:
-				log.Infof("controller: run %q", cu.unit.Name)
-				wg.Add(1)
-				go func(g *Guard) {
-					defer wg.Done()
-					g.RunCtx(ctx)
-				}(cu.guard)
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			break loop
+		case cmd := <-c.commandC:
+			switch cmd := cmd.(type) {
+			case *CommandStartAll:
+				cmd.resultC <- c.startAll()
+			case *CommandStopAll:
+				cmd.resultC <- c.stopAll()
+			case *CommandStart:
+				cmd.resultC <- c.start(cmd.unit)
+			case *CommandStop:
+				cmd.resultC <- c.stop(cmd.unit)
+			case *CommandEnable:
+				cmd.resultC <- c.enable(cmd.unit)
+			case *CommandDisable:
+				cmd.resultC <- c.disable(cmd.unit)
+			case *CommandDeploy:
+				var resp CommandResponse
+				cu, ok := c.findUnit(cmd.unit)
+				if ok {
+					resp = c.deployUpdate(cu, cmd.dir)
+					continue loop
+				}
+				cu, resp = c.deployCreate(cmd.unit, cmd.dir)
+				if !resp.HasErrors() {
+					log.Infof("controller: run %q", cu.unit.Name)
+					wg.Add(1)
+					gctx, cancel := context.WithCancel(ctx)
+					cu.cancel = cancel
+					go func(g *Guard) {
+						defer wg.Done()
+						g.RunCtx(gctx)
+					}(cu.guard)
+					sresp := c.start(cmd.unit)
+					resp.merge(sresp)
+				}
+				cmd.resultC <- resp
+			default:
+				log.Warnf("invalid command of type %T", cmd)
 			}
 		}
-	}()
+	}
 
 	select {
 	case <-time.After(5 * time.Second):
@@ -113,95 +161,19 @@ func (c *Controller) RunCtx(ctx context.Context, guardsRunningC chan struct{}) {
 	}
 }
 
-type ControllerResponse struct {
-	Messages []string
-	Errors   []string
-}
-
-func (cr *ControllerResponse) Msgf(pattern string, args ...any) {
-	cr.Messages = append(cr.Messages, fmt.Sprintf(pattern, args...))
-}
-
-func (cr *ControllerResponse) Errf(pattern string, args ...any) {
-	cr.Messages = append(cr.Messages, fmt.Sprintf(pattern, args...))
-}
-
-func (cr ControllerResponse) log() {
-	for _, m := range cr.Messages {
-		log.Infof("controller: %s", m)
-	}
-	for _, m := range cr.Errors {
-		log.Errorf("controller: %s", m)
-	}
-}
-
-func (c *Controller) collectStats() {
-	c.Lock()
-	defer c.Unlock()
+func (c *Controller) startAll() (resp CommandResponse) {
 	for _, cu := range c.units {
-		if !cu.guard.IsStarted() {
-			cu.stats = Stats{}
-			continue
-		}
-		pid := int32(cu.guard.PID())
-		if cu.proc == nil || pid != cu.proc.Pid {
-			proc, err := process.NewProcess(pid)
-			if err != nil {
-				log.Warnf("controller-stats: new-process for PID %d: %v", pid, err)
-				continue
-			}
-			cu.proc = proc
-		}
-
-		err := CollectStats(cu.proc, &cu.stats)
-		if err != nil {
-			log.Warnf("collect stats for unit %q, pid %d", cu.unit.Name, cu.guard.PID())
-			continue
-		}
-	}
-}
-
-//
-
-func (c *Controller) StartAll() (resp ControllerResponse) {
-	c.Lock()
-	defer c.Unlock()
-	for _, cu := range c.units {
-		if cu.guard.IsStarted() {
-			resp.Msgf("guard %q is already started with PID %d", cu.unit.Name, cu.guard.PID())
-			continue
-		}
-		if !cu.unit.Config.Enabled {
-			resp.Msgf("guard %q is disabled", cu.unit.Name)
-			continue
-		}
-
-		pid, err := cu.guard.Start()
-		if err != nil {
-			resp.Errf("ERROR: starting %q: %v", cu.unit.Name, err)
-			continue
-		}
-		resp.Msgf("started %q with PID %d", cu.unit.Name, pid)
+		uresp := c.start(cu.unit.Name)
+		resp.merge(uresp)
 	}
 	resp.log()
 	return
 }
 
-func (c *Controller) StopAll() (resp ControllerResponse) {
-	c.Lock()
-	defer c.Unlock()
+func (c *Controller) stopAll() (resp CommandResponse) {
 	for _, cu := range c.units {
-		if !cu.guard.IsStarted() {
-			resp.Msgf("guard %q is not started", cu.unit.Name)
-			continue
-		}
-
-		err := cu.guard.Stop()
-		if err != nil {
-			resp.Errf("ERROR: stopping %q with PID %d: %v", cu.unit.Name, cu.guard.PID(), err)
-			continue
-		}
-		resp.Msgf("stopped %q", cu.unit.Name)
+		uresp := c.stop(cu.unit.Name)
+		resp.merge(uresp)
 	}
 	resp.log()
 	return
@@ -216,153 +188,106 @@ func (c *Controller) findUnit(unit string) (*controllerUnit, bool) {
 	return nil, false
 }
 
-func (c *Controller) unitDo(unit string, do func(cu *controllerUnit, resp *ControllerResponse)) (resp ControllerResponse) {
-	c.Lock()
-	defer c.Unlock()
+func (c *Controller) unitDo(unit string, do func(cu *controllerUnit, resp *CommandResponse)) (resp CommandResponse) {
 	if cu, ok := c.findUnit(unit); ok {
 		do(cu, &resp)
 		resp.log()
 		return
 	}
-	resp.Errf("no such unit %q", unit)
+	resp.Errorf("no such unit %q", unit)
 	resp.log()
 	return
 }
 
-func (c *Controller) Start(unit string) (resp ControllerResponse) {
-	return c.unitDo(unit, func(cu *controllerUnit, resp *ControllerResponse) {
+func (c *Controller) start(unit string) (resp CommandResponse) {
+	return c.unitDo(unit, func(cu *controllerUnit, resp *CommandResponse) {
 		if !cu.unit.Config.Enabled {
-			resp.Msgf("unit %q is disabled", unit)
+			resp.AddMsg("unit %q is disabled", unit)
 			return
 		}
 		if cu.guard.IsStarted() {
-			resp.Msgf("guard %q is already started with PID %d", cu.unit.Name, cu.guard.PID())
+			resp.AddMsg("guard %q is already started with PID %d", cu.unit.Name, cu.guard.PID())
 			return
 		}
 
 		pid, err := cu.guard.Start()
 		if err != nil {
-			resp.Errf("starting unit %q: %v", unit, err)
-		} else {
-			resp.Msgf("started %q with PID %d", cu.unit.Name, pid)
+			resp.Errorf("starting unit %q: %v", unit, err)
+			return
 		}
+		c.statCache.started(cu.unit.Name, pid)
+		resp.AddMsg("started %q with PID %d", cu.unit.Name, pid)
 	})
 }
 
-func (c *Controller) Stop(unit string) (resp ControllerResponse) {
-	return c.unitDo(unit, func(cu *controllerUnit, resp *ControllerResponse) {
+func (c *Controller) stop(unit string) (resp CommandResponse) {
+	return c.unitDo(unit, func(cu *controllerUnit, resp *CommandResponse) {
 		if !cu.guard.IsStarted() {
-			resp.Msgf("guard %q is not started", cu.unit.Name)
+			resp.AddMsg("guard %q is not started", cu.unit.Name)
 			return
 		}
 
 		err := cu.guard.Stop()
 		if err != nil {
-			resp.Errf("ERROR: stopping %q with PID %d: %v", cu.unit.Name, cu.guard.PID(), err)
+			resp.Errorf("ERROR: stopping %q with PID %d: %v", cu.unit.Name, cu.guard.PID(), err)
 			return
 		}
-		resp.Msgf("stopped %q", cu.unit.Name)
+		c.statCache.stopped(cu.unit.Name)
+		resp.AddMsg("stopped %q", cu.unit.Name)
 	})
 }
 
-func (c *Controller) Enable(unit string) (resp ControllerResponse) {
-	return c.unitDo(unit, func(cu *controllerUnit, resp *ControllerResponse) {
+func (c *Controller) enable(unit string) (resp CommandResponse) {
+	return c.unitDo(unit, func(cu *controllerUnit, resp *CommandResponse) {
 		if cu.unit.Config.Enabled {
-			resp.Msgf("unit %q is already enabled", unit)
+			resp.AddMsg("unit %q is already enabled", unit)
 			return
 		}
 		cu.unit.Config.Enabled = true
 		err := c.unitConfigs.SaveUnit(cu.unit)
 		if err != nil {
-			resp.Errf("enable unit %q: save: %v", unit, err)
-		} else {
-			resp.Msgf("enable unit %q", unit)
+			resp.Errorf("enable unit %q: save: %v", unit, err)
+			return
 		}
+		c.statCache.enabled(cu.unit.Name)
+		resp.AddMsg("enable unit %q", unit)
 	})
 }
 
-func (c *Controller) Disable(unit string) (resp ControllerResponse) {
-	return c.unitDo(unit, func(cu *controllerUnit, resp *ControllerResponse) {
+func (c *Controller) disable(unit string) (resp CommandResponse) {
+	return c.unitDo(unit, func(cu *controllerUnit, resp *CommandResponse) {
 		if !cu.unit.Config.Enabled {
-			resp.Msgf("unit %q is already disabled", unit)
+			resp.AddMsg("unit %q is already disabled", unit)
 			return
 		}
 		if cu.guard.IsStarted() {
 			err := cu.guard.Stop()
 			if err != nil {
-				resp.Errf("ERROR: stopping %q with PID %d: %v", cu.unit.Name, cu.guard.PID(), err)
+				resp.Errorf("ERROR: stopping %q with PID %d: %v", cu.unit.Name, cu.guard.PID(), err)
 				return
 			}
-			resp.Msgf("stopped %q", cu.unit.Name)
+			c.statCache.stopped(cu.unit.Name)
+			resp.AddMsg("stopped %q", cu.unit.Name)
 		}
 
 		cu.unit.Config.Enabled = false
 		err := c.unitConfigs.SaveUnit(cu.unit)
 		if err != nil {
-			resp.Errf("disable unit %q: save: %v", unit, err)
-		} else {
-			resp.Msgf("disable unit %q", unit)
-		}
-	})
-}
-
-func (c *Controller) Stat() (resp ControllerResponse) {
-	c.Lock()
-	defer c.Unlock()
-	for _, cu := range c.units {
-		if !cu.unit.Config.Enabled {
-			resp.Msgf("unit %q: disabled", cu.unit.Name)
-			continue
-		}
-		if cu.guard.IsStarted() {
-			resp.Msgf("unit %q: enabled, started with PID %d: %s", cu.unit.Name, cu.guard.PID(), cu.stats.String())
-		} else {
-			resp.Msgf("unit %q: enabled, not-started", cu.unit.Name)
-		}
-	}
-	return
-}
-
-func (c *Controller) StatUnit(unit string) (resp ControllerResponse) {
-	return c.unitDo(unit, func(cu *controllerUnit, resp *ControllerResponse) {
-		if !cu.unit.Config.Enabled {
-			resp.Msgf("unit %q: disabled", cu.unit.Name)
+			resp.Errorf("disable unit %q: save: %v", unit, err)
 			return
 		}
-		if cu.guard.IsStarted() {
-			resp.Msgf("unit %q: enabled, started with PID %d: %s", cu.unit.Name, cu.guard.PID(), cu.stats.String())
-		} else {
-			resp.Msgf("unit %q: enabled, not-started", cu.unit.Name)
-		}
+		c.statCache.disabled(cu.unit.Name)
+		resp.AddMsg("disable unit %q", unit)
 	})
 }
 
-func (c *Controller) Deploy(name string, dir string) (resp ControllerResponse, err error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return resp, errors.Errorf("empty unit name")
-	}
-	err = ValidateUnitDir(dir)
-	if err != nil {
-		return resp, errors.Wrapf(err, "validate unit-dir %q", dir)
-	}
-
-	//check if unit exists
-	c.Lock()
-	defer c.Unlock()
-	if cu, ok := c.findUnit(name); ok {
-		return c.deployUpdate(cu, dir)
-	} else {
-		return c.deployCreate(name, dir)
-	}
-}
-
-func (c *Controller) deployCreate(unit string, dir string) (resp ControllerResponse, err error) {
+func (c *Controller) deployCreate(unit string, dir string) (newUnit *controllerUnit, resp CommandResponse) {
 	u, err := c.unitConfigs.Create(unit, dir)
 	if err != nil {
-		return resp, errors.Wrapf(err, "create unit-config %q in %q", unit, dir)
+		resp.Error(errors.Wrapf(err, "create unit-config %q in %q", unit, dir))
+		return nil, resp
 	}
-	resp.Msgf("unit %q: created", unit)
+	resp.AddMsg("unit %q: created", unit)
 
 	guard, err := NewGuard(
 		filepath.Join(u.Dir, u.Config.Program),
@@ -372,33 +297,20 @@ func (c *Controller) deployCreate(unit string, dir string) (resp ControllerRespo
 		WithRestartAfter(time.Second*time.Duration(u.Config.RestartAfterSec)),
 	)
 	if err != nil {
-		return resp, errors.Wrapf(err, "new-guard for unit %q", u.Name)
+		resp.Error(errors.Wrapf(err, "new-guard for unit %q", u.Name))
+		return nil, resp
 	}
 
-	cu := &controllerUnit{
+	newUnit = &controllerUnit{
 		unit:  u,
 		guard: guard,
 	}
-	c.units = append(c.units, cu)
-	c.runC <- cu
-	resp.Msgf("unit %q: guard is running", unit)
-
-	if !u.Config.Enabled {
-		resp.Msgf("unit %q: disabled", unit)
-		return
-	}
-
-	pid, err := guard.Start()
-	if err != nil {
-		resp.Errf("starting unit %q: %v", unit, err)
-	} else {
-		resp.Msgf("started %q with PID %d", unit, pid)
-	}
-
-	return
+	c.units = append(c.units, newUnit)
+	c.statCache.add(u.Name, u.Config.Enabled)
+	return newUnit, resp
 }
 
-func (c *Controller) deployUpdate(cu *controllerUnit, dir string) (resp ControllerResponse, err error) {
+func (c *Controller) deployUpdate(cu *controllerUnit, dir string) (resp CommandResponse) {
 	wasRunning := false
 	if cu.guard.IsStarted() {
 		wasRunning = true
@@ -408,7 +320,8 @@ func (c *Controller) deployUpdate(cu *controllerUnit, dir string) (resp Controll
 	//
 	u, err := c.unitConfigs.Update(cu.unit.Name, dir)
 	if err != nil {
-		return resp, errors.Wrapf(err, "%q: update-unit-config", cu.unit.Name)
+		resp.Error(errors.Wrapf(err, "%q: update-unit-config", cu.unit.Name))
+		return resp
 	}
 	cu.unit = u
 
@@ -418,27 +331,36 @@ func (c *Controller) deployUpdate(cu *controllerUnit, dir string) (resp Controll
 		WithEnv(u.Config.Env...),
 		WithWd(u.Dir),
 		WithRestartAfter(time.Second*time.Duration(u.Config.RestartAfterSec)),
+		WithOnChange(func(rs GuardRunningState, pid int) {
+			switch rs {
+			case GuardStatusRunningStarted:
+				c.statCache.started(u.Name, pid)
+			case GuardStatusRunningStopped:
+				c.statCache.stopped(u.Name)
+			}
+		}),
 	)
 	if err != nil {
-		return resp, errors.Wrapf(err, "%q: update-guard-options", cu.unit.Name)
+		resp.Error(errors.Wrapf(err, "%q: update-guard-options", cu.unit.Name))
+		return resp
 	}
-	resp.Msgf("unit %q: updated", cu.unit.Name)
+	resp.AddMsg("unit %q: updated", cu.unit.Name)
 
 	//
 	if !cu.unit.Config.Enabled {
-		resp.Msgf("unit %q: disabled", cu.unit.Name)
+		resp.AddMsg("unit %q: disabled", cu.unit.Name)
 		return
 	}
 	if !wasRunning {
-		resp.Msgf("unit %q: not started (was not running before)", cu.unit.Name)
+		resp.AddMsg("unit %q: not started (was not running before)", cu.unit.Name)
 		return
 	}
 
 	pid, err := cu.guard.Start()
 	if err != nil {
-		resp.Errf("starting unit %q: %v", cu.unit.Name, err)
+		resp.Errorf("starting unit %q: %v", cu.unit.Name, err)
 	} else {
-		resp.Msgf("started %q with PID %d", cu.unit.Name, pid)
+		resp.AddMsg("started %q with PID %d", cu.unit.Name, pid)
 	}
 	return
 }

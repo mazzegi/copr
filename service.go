@@ -50,19 +50,18 @@ func (s *Service) RunCtx(ctx context.Context) error {
 	log.Infof("serving on %q", s.listener.Addr())
 
 	//activate controller
-	guardsRunningC := make(chan struct{})
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		s.controller.RunCtx(ctx, guardsRunningC)
+		s.controller.RunCtx(ctx)
 	}()
-	<-guardsRunningC
 
 	s.controller.StartAll()
 
 	<-ctx.Done()
-	//wait for controller
+
+	log.Infof("wait for controller done")
 	wg.Wait()
 	log.Infof("controller is done")
 
@@ -73,12 +72,12 @@ func (s *Service) RunCtx(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) replyMsg(w http.ResponseWriter, status int, resp ControllerResponse) {
+func (s *Service) replyMsg(w http.ResponseWriter, status int, resp CommandResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(CTLResponse{
 		CtrlMessages: resp.Messages,
-		CtrlErrors:   resp.Errors,
+		CtrlErrors:   resp.ErrorStrings(),
 	})
 }
 
@@ -86,9 +85,9 @@ func (s *Service) handleHttp(w http.ResponseWriter, r *http.Request) {
 	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
 	apiKey := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer"))
 	if apiKey != s.apiKey {
-		s.replyMsg(w, http.StatusUnauthorized, ControllerResponse{
-			Errors: []string{"unauthorized"},
-		})
+		resp := CommandResponse{}
+		resp.Errorf("unauthorized")
+		s.replyMsg(w, http.StatusUnauthorized, resp)
 		return
 	}
 
@@ -108,17 +107,17 @@ func (s *Service) handleGET(w http.ResponseWriter, r *http.Request) {
 	elt, tail, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	switch elt {
 	case "stat":
-		var resp ControllerResponse
+		var resp CommandResponse
 		unit := r.URL.Query().Get("unit")
 		if unit == "" {
-			resp = s.controller.Stat()
+			resp = s.controller.StatAll()
 		} else {
-			resp = s.controller.StatUnit(unit)
+			resp = s.controller.Stat(unit)
 		}
 		s.replyMsg(w, http.StatusOK, resp)
 	default:
-		resp := ControllerResponse{}
-		resp.Errf("no such resource %q", elt)
+		resp := CommandResponse{}
+		resp.Errorf("no such resource %q", elt)
 		s.replyMsg(w, http.StatusNotFound, resp)
 	}
 	_ = tail
@@ -149,14 +148,14 @@ func (s *Service) handlePOST(w http.ResponseWriter, r *http.Request) {
 	case "deploy":
 		resp, err := s.deploy(r)
 		if err != nil {
-			resp.Errf(err.Error())
+			resp.Error(err)
 			s.replyMsg(w, http.StatusInternalServerError, resp)
 		} else {
 			s.replyMsg(w, http.StatusOK, resp)
 		}
 	default:
-		resp := ControllerResponse{}
-		resp.Errf("no such command %q", elt)
+		resp := CommandResponse{}
+		resp.Errorf("no such command %q", elt)
 		s.replyMsg(w, http.StatusNotFound, resp)
 	}
 	_ = tail
@@ -164,32 +163,32 @@ func (s *Service) handlePOST(w http.ResponseWriter, r *http.Request) {
 
 //
 
-func (s *Service) deploy(r *http.Request) (ControllerResponse, error) {
+func (s *Service) deploy(r *http.Request) (CommandResponse, error) {
 	//copy content to temp file
 	name := fmt.Sprintf("deploy_%s_%d", time.Now().Format("20060102150405"), rand.Intn(1000))
 	tmpFile := fmt.Sprintf(".tmp/%s.zip", name)
 
 	err := os.MkdirAll(".tmp", os.ModePerm)
 	if err != nil {
-		return ControllerResponse{}, errors.Wrapf(err, "mkdirall %q", ".tmp")
+		return CommandResponse{}, errors.Wrapf(err, "mkdirall %q", ".tmp")
 	}
 	defer os.RemoveAll(".tmp")
 	tf, err := os.Create(tmpFile)
 	if err != nil {
-		return ControllerResponse{}, errors.Wrapf(err, "create temp-file %q", tmpFile)
+		return CommandResponse{}, errors.Wrapf(err, "create temp-file %q", tmpFile)
 	}
 	defer tf.Close()
 
 	_, err = io.Copy(tf, r.Body)
 	if err != nil {
-		return ControllerResponse{}, errors.Wrapf(err, "deploy copy to tmp-file %q", tmpFile)
+		return CommandResponse{}, errors.Wrapf(err, "deploy copy to tmp-file %q", tmpFile)
 	}
 
 	// unzip folder
 	tmpDir := fmt.Sprintf(".tmp/%s", name)
 	err = UnzipTo(tmpFile, tmpDir)
 	if err != nil {
-		return ControllerResponse{}, errors.Wrapf(err, "unzip %q to %q", tmpFile, tmpDir)
+		return CommandResponse{}, errors.Wrapf(err, "unzip %q to %q", tmpFile, tmpDir)
 	}
-	return s.controller.Deploy(r.URL.Query().Get("unit"), tmpDir)
+	return s.controller.Deploy(r.URL.Query().Get("unit"), tmpDir), nil
 }
