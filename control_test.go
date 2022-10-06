@@ -43,7 +43,7 @@ func bootstrapTestDeployment(dir string, unitNum int, env []string, enabled bool
 	}
 	// create unit file
 	unitConf := UnitConfig{
-		Enabled:         true,
+		Enabled:         enabled,
 		Program:         prgName,
 		Args:            []string{fmt.Sprintf("-bind=127.0.0.1:%d", 31000+unitNum)},
 		Env:             env,
@@ -250,11 +250,17 @@ func TestControllerDeploy(t *testing.T) {
 	assertNoErr(t, err, "bootstrap in %q", unitsDir)
 
 	//deployment
-	deploymentDir := filepath.Join(tmpDir, "deployment")
-	err = os.MkdirAll(deploymentDir, os.ModePerm)
-	assertNoErr(t, err, "mkdirall %q", deploymentDir)
-	err = bootstrapTestDeployment(deploymentDir, 3, []string{}, true)
-	assertNoErr(t, err, "bootstrap deployment in %q", deploymentDir)
+	deploymentCreateDir := filepath.Join(tmpDir, "deployment_create")
+	err = os.MkdirAll(deploymentCreateDir, os.ModePerm)
+	assertNoErr(t, err, "mkdirall %q", deploymentCreateDir)
+	err = bootstrapTestDeployment(deploymentCreateDir, 3, []string{}, true)
+	assertNoErr(t, err, "bootstrap deployment in %q", deploymentCreateDir)
+
+	deploymentUpdateDir := filepath.Join(tmpDir, "deployment_update")
+	err = os.MkdirAll(deploymentUpdateDir, os.ModePerm)
+	assertNoErr(t, err, "mkdirall %q", deploymentUpdateDir)
+	err = bootstrapTestDeployment(deploymentUpdateDir, 1, []string{}, false)
+	assertNoErr(t, err, "bootstrap deployment in %q", deploymentUpdateDir)
 
 	//secrets
 	secFile := filepath.Join(unitsDir, "copr.secrets")
@@ -294,11 +300,17 @@ func TestControllerDeploy(t *testing.T) {
 	assertAllRunning()
 
 	//deploy new
-	err = ctrl.Deploy(unitName(unitCount+1), deploymentDir).Error()
-	assertNoErr(t, err, "start-all")
+	err = ctrl.Deploy(unitName(unitCount+1), deploymentCreateDir).Error()
+	assertNoErr(t, err, "deploy-create")
 	unitCount++
 	<-time.After(checkStatusAfter)
 	assertAllRunning()
+
+	// deploy existing - disabled
+	err = ctrl.Deploy(unitName(1), deploymentUpdateDir).Error()
+	assertNoErr(t, err, "deploy-update")
+	<-time.After(checkStatusAfter)
+	assertUnitNotRunning(t, 1)
 
 	//finish
 	<-time.After(50 * time.Millisecond)

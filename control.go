@@ -130,6 +130,7 @@ loop:
 				cu, ok := c.findUnit(cmd.unit)
 				if ok {
 					resp = c.deployUpdate(cu, cmd.dir)
+					cmd.resultC <- resp
 					continue loop
 				}
 				cu, resp = c.deployCreate(cmd.unit, cmd.dir)
