@@ -118,16 +118,26 @@ func bootstrapTestUnits(dir string, unitCount int, env []string) error {
 
 func assertUnitRunning(t *testing.T, unitNum int) {
 	url := fmt.Sprintf("http://127.0.0.1:%d", 31000+unitNum)
-	err := sendRequest(url, coprtest.TestCommand{Action: coprtest.TestActionProbe})
+	_, err := sendRequest(url, coprtest.TestCommand{Action: coprtest.TestActionProbe})
 	assertNoErr(t, err, "assert-running unit no %d", unitNum)
 	log.Debugf("probe %d on %q - OK", unitNum, url)
 }
 
 func assertUnitNotRunning(t *testing.T, unitNum int) {
 	url := fmt.Sprintf("http://127.0.0.1:%d", 31000+unitNum)
-	err := sendRequest(url, coprtest.TestCommand{Action: coprtest.TestActionProbe})
+	_, err := sendRequest(url, coprtest.TestCommand{Action: coprtest.TestActionProbe})
 	assertErr(t, err, "assert-not-running unit no %d", unitNum)
 	log.Debugf("probe %d on %q - FAILED (which is OK)", unitNum, url)
+}
+
+func assertUnitEnv(t *testing.T, unitNum int, key, val string) {
+	url := fmt.Sprintf("http://127.0.0.1:%d", 31000+unitNum)
+	bs, err := sendRequest(url, coprtest.TestCommand{
+		Action: coprtest.TestActionGetEnv,
+		Param:  key,
+	})
+	assertNoErr(t, err, "assert-env unit no %d", unitNum)
+	assertEqual(t, val, string(bs), "env equal")
 }
 
 func unitName(unitNum int) string {
@@ -259,16 +269,15 @@ func TestControllerDeploy(t *testing.T) {
 	deploymentUpdateDir := filepath.Join(tmpDir, "deployment_update")
 	err = os.MkdirAll(deploymentUpdateDir, os.ModePerm)
 	assertNoErr(t, err, "mkdirall %q", deploymentUpdateDir)
-	err = bootstrapTestDeployment(deploymentUpdateDir, 1, []string{}, false)
+	env := []string{"foo=bar", "bazsec={bazsec}"}
+	err = bootstrapTestDeployment(deploymentUpdateDir, 1, env, false)
 	assertNoErr(t, err, "bootstrap deployment in %q", deploymentUpdateDir)
 
 	//secrets
 	secFile := filepath.Join(unitsDir, "copr.secrets")
 	sec, err := NewSecrets(secFile, "controller-test-pwd")
 	assertNoErr(t, err, "new-secrets in %q", secFile)
-
-	sec.Set("foo", "bar")
-	sec.Set("baz", "acme")
+	sec.Set("bazsec", "correct battery horse staple")
 
 	ctrl, err := NewController(unitsDir, sec)
 	assertNoErr(t, err, "new-controller")
@@ -311,6 +320,16 @@ func TestControllerDeploy(t *testing.T) {
 	assertNoErr(t, err, "deploy-update")
 	<-time.After(checkStatusAfter)
 	assertUnitNotRunning(t, 1)
+
+	// enable & start 1
+	assertNoErr(t, ctrl.Enable(unitName(1)).Error(), "enable 1")
+	assertNoErr(t, ctrl.Start(unitName(1)).Error(), "start 1")
+	<-time.After(checkStatusAfter)
+	assertAllRunning()
+
+	// check env
+	assertUnitEnv(t, 1, "foo", "bar")
+	assertUnitEnv(t, 1, "bazsec", "correct battery horse staple")
 
 	//finish
 	<-time.After(50 * time.Millisecond)

@@ -27,23 +27,23 @@ func buildPrg(dir string, name string) error {
 	return err
 }
 
-func sendRequest(url string, cmd coprtest.TestCommand) error {
+func sendRequest(url string, cmd coprtest.TestCommand) ([]byte, error) {
 	var buf bytes.Buffer
 	err := json.NewEncoder(&buf).Encode(cmd)
 	if err != nil {
-		return errors.Wrap(err, "encode-json")
+		return nil, errors.Wrap(err, "encode-json")
 	}
 
 	resp, err := http.Post(url, "application/json", &buf)
 	if err != nil {
-		return errors.Wrap(err, "post-request")
+		return nil, errors.Wrap(err, "post-request")
 	}
+	bs, _ := io.ReadAll(resp.Body)
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bs, _ := io.ReadAll(resp.Body)
-		return errors.Errorf("request-error with status %s: %q", resp.Status, string(bs))
+		return nil, errors.Errorf("request-error with status %s: %q", resp.Status, string(bs))
 	}
-	return nil
+	return bs, nil
 }
 
 func assertEqual[T comparable](t *testing.T, want T, have T, msg string, args ...any) {

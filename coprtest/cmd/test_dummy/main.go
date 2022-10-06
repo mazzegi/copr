@@ -46,6 +46,10 @@ func main() {
 				w.WriteHeader(http.StatusOK)
 			case coprtest.TestActionProbe:
 				w.WriteHeader(http.StatusOK)
+			case coprtest.TestActionGetEnv:
+				env := os.Getenv(cmd.Param)
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, env)
 			default:
 				http.Error(w, fmt.Sprintf("unknown action %q", cmd.Action), http.StatusBadRequest)
 				return
