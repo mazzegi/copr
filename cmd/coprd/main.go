@@ -36,7 +36,16 @@ func run() error {
 		return errors.Errorf("found no apikey")
 	}
 
-	controller, err := copr.NewController(*dir, secs)
+	glbEnvPath := filepath.Join(*dir, copr.GlobalEnvFile)
+	glbEnv, err := copr.LoadGlobalEnv(glbEnvPath, secs)
+	if err != nil {
+		log.Warnf("loading global env from %q: %v", glbEnvPath, err)
+	}
+	for k, v := range glbEnv {
+		log.Infof("global-env: %q = %q", k, v)
+	}
+
+	controller, err := copr.NewController(*dir, secs, glbEnv)
 	if err != nil {
 		return errors.Wrapf(err, "new controller in %q", *dir)
 	}

@@ -23,14 +23,18 @@ func run() error {
 		fmt.Printf("Theres no secret file in this directory. Continue to create a new one\n")
 	}
 
-	fmt.Printf("Enter password: ")
-	pwd, err := term.ReadPassword(0)
-	if err != nil {
-		return errors.Wrap(err, "read-password")
+	pwd := os.Getenv("COPRD_PWD")
+	if pwd == "" {
+		fmt.Printf("Enter password: ")
+		rpwd, err := term.ReadPassword(0)
+		if err != nil {
+			return errors.Wrap(err, "read-password")
+		}
+		pwd = string(rpwd)
 	}
 	fmt.Println()
 
-	cs, err := copr.NewSecrets(secretFile, string(pwd))
+	cs, err := copr.NewSecrets(secretFile, pwd)
 	if err != nil {
 		return errors.Wrapf(err, "new-secrets at %q", secretFile)
 	}

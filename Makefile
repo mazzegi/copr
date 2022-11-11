@@ -10,3 +10,4 @@ secrettools:
 	go build -v -o $(HOME)/bin/seced  cmd/seced/main.go
 	go build -v -o $(HOME)/bin/seccat cmd/seccat/main.go
 	go build -v -o $(HOME)/bin/coprsec cmd/coprsec/main.go
+	go build -v -o $(HOME)/bin/coprctl cmd/coprctl/main.go

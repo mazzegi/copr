@@ -2,6 +2,7 @@ package copr
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
@@ -16,7 +17,7 @@ type controllerUnit struct {
 	cancel func()
 }
 
-func NewController(dir string, secs *Secrets) (*Controller, error) {
+func NewController(dir string, secs *Secrets, glbEnv map[string]string) (*Controller, error) {
 	us, err := LoadUnits(dir, secs)
 	if err != nil {
 		return nil, errors.Wrapf(err, "load-units in %q", dir)
@@ -24,16 +25,22 @@ func NewController(dir string, secs *Secrets) (*Controller, error) {
 
 	c := &Controller{
 		unitConfigs: us,
+		glbEnv:      glbEnv,
 		commandC:    make(chan Command),
 		statCache:   NewUnitStatsCache(),
 	}
 	for _, u := range us.units {
 		u := u
-		log.Debugf("controller: new-guard: prg=%q; args=%v; env=%v", u.Config.Program, u.Config.Args, u.Config.Env)
+		env := u.Config.Env
+		for k, v := range glbEnv {
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+		}
+
+		log.Debugf("controller: new-guard: prg=%q; args=%v; env=%v", u.Config.Program, u.Config.Args, env)
 		guard, err := NewGuard(
 			filepath.Join(u.Dir, u.Config.Program),
 			WithArgs(u.Config.Args...),
-			WithEnv(u.Config.Env...),
+			WithEnv(env...),
 			WithWd(u.Dir),
 			WithRestartAfter(time.Second*time.Duration(u.Config.RestartAfterSec)),
 			WithOnChange(func(rs GuardRunningState, pid int) {
@@ -62,6 +69,7 @@ func NewController(dir string, secs *Secrets) (*Controller, error) {
 type Controller struct {
 	sync.RWMutex
 	unitConfigs *Units
+	glbEnv      map[string]string
 	units       []*controllerUnit
 	commandC    chan Command
 	statCache   *UnitStatsCache
@@ -291,10 +299,15 @@ func (c *Controller) deployCreate(unit string, dir string) (newUnit *controllerU
 	}
 	resp.AddMsg("unit %q: created", unit)
 
+	env := u.Config.Env
+	for k, v := range c.glbEnv {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
 	guard, err := NewGuard(
 		filepath.Join(u.Dir, u.Config.Program),
 		WithArgs(u.Config.Args...),
-		WithEnv(u.Config.Env...),
+		WithEnv(env...),
 		WithWd(u.Dir),
 		WithRestartAfter(time.Second*time.Duration(u.Config.RestartAfterSec)),
 	)
@@ -328,9 +341,13 @@ func (c *Controller) deployUpdate(cu *controllerUnit, dir string) (resp CommandR
 	cu.unit = u
 
 	//update guard
+	env := u.Config.Env
+	for k, v := range c.glbEnv {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
 	err = cu.guard.UpdateOpts(
 		WithArgs(u.Config.Args...),
-		WithEnv(u.Config.Env...),
+		WithEnv(env...),
 		WithWd(u.Dir),
 		WithRestartAfter(time.Second*time.Duration(u.Config.RestartAfterSec)),
 		WithOnChange(func(rs GuardRunningState, pid int) {

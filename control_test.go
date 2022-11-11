@@ -162,7 +162,9 @@ func TestController(t *testing.T) {
 	sec.Set("foo", "bar")
 	sec.Set("baz", "acme")
 
-	ctrl, err := NewController(unitsDir, sec)
+	glbEnv := map[string]string{}
+
+	ctrl, err := NewController(unitsDir, sec, glbEnv)
 	assertNoErr(t, err, "new-controller")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -279,7 +281,8 @@ func TestControllerDeploy(t *testing.T) {
 	assertNoErr(t, err, "new-secrets in %q", secFile)
 	sec.Set("bazsec", "correct battery horse staple")
 
-	ctrl, err := NewController(unitsDir, sec)
+	glbEnv := map[string]string{}
+	ctrl, err := NewController(unitsDir, sec, glbEnv)
 	assertNoErr(t, err, "new-controller")
 
 	ctx, cancel := context.WithCancel(context.Background())
